@@ -39,8 +39,11 @@ on:
       - "src/bin/gpuinfo.rs"
       - "tests/backend.rs"
       - ".github/workflows/gpu.yml"
+  # Also on this branch. A `workflow_dispatch` is only offered for files that are already on the
+  # default branch, and this branch's whole point is that it is not there yet -- so it triggers on
+  # its own pushes rather than being merged early just to become runnable.
   push:
-    branches: [main]
+    branches: [main, 'gpu/**']
   workflow_dispatch:
 
 concurrency:
