@@ -305,9 +305,23 @@ fn a_device_agrees_with_the_cpu() {
         "a comparison where neither side found anything proves nothing"
     );
 
+    // Its own small ending list, rather than the forty thousand stems above.
+    //
+    // Reusing `packed` here was careless and it cost a green build. Forty thousand endings against
+    // two and a half thousand ids is a hundred million entries: eight hundred megabytes on the
+    // device and the same again, twice, on the host. It passed on a workstation and took down a
+    // continuous integration runner with sixteen gigabytes and four cores -- as a segmentation
+    // fault inside somebody else's driver, rather than as anything that named itself.
+    //
+    // What this has to prove is that the two sides agree, and they agree at four hundred endings
+    // exactly as they would at forty thousand.
+    let endings: Vec<String> = (0..400).map(|n| format!("_variant{n:03}.xmodel")).collect();
+
+    let endings = StemBatch::pack(&endings, true);
+
     let peel_request = PeelRequest {
         spellings: &wanted,
-        endings: &packed,
+        endings: &endings,
         no_ending: true,
     };
 
