@@ -42,21 +42,33 @@ jobs:
           - name: windows
             runner: windows-latest
             binary: gpuinfo.exe
+            rustflags: -C target-feature=+crt-static
           # Not `ubuntu-latest`. A binary built against a newer glibc refuses to start on an older
           # distribution, and the person being asked to run this did not volunteer to debug that.
           # 22.04's glibc is old enough to cover nearly everything still in use.
           - name: linux
             runner: ubuntu-22.04
             binary: gpuinfo
+            rustflags: ''
           - name: macos
             runner: macos-latest
             binary: gpuinfo
+            rustflags: ''
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      # Windows links Microsoft's C runtime dynamically by default, which means the executable
+      # needs vcruntime140.dll to start. Nearly every Windows machine has it -- every game
+      # installs it -- and nearly is not the promise being made. Somebody is being asked to run
+      # one file and send back a report, and "install the Visual C++ redistributable first" is
+      # exactly the round trip this whole thing exists to avoid.
+      #
+      # Static linking costs a few hundred kilobytes and removes the dependency entirely.
       - run: cargo build --release --bin gpuinfo
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
 
       # Proof the thing runs at all before it is handed to anybody. On a runner with no graphics
       # driver it prints that it found no device and exits zero, which is the correct behaviour and
