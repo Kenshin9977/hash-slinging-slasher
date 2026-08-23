@@ -321,17 +321,47 @@ That is exactly the split that could not have been settled by argument, and it i
 Oclgrind is in CI rather than being a thing that was considered. The Mesa job stays too, marked
 non-blocking: it checks the sweep half meanwhile, and it will start passing when Mesa does.
 
-**What none of this establishes is that the kernel produces right answers on a Radeon.** It
-compiles for five generations without spilling, it is free of the memory errors a simulator can
-see, and two other vendors agree with the CPU byte for byte. A card would still be worth more than
-all of it.
+That was written when none of this established that the kernel produces right answers on a Radeon.
+A card has now been applied and it does, on RDNA3. What the offline compile and the simulator were
+standing in for, they were standing in for correctly -- which is the useful thing to know about
+them for the generations still unwitnessed.
 
-### What has not been checked, and by whom it can be
+### A third vendor: AMD
 
-**No AMD device has run this**, and that is a gap in the evidence rather than in the support. There
-is no vendor branch anywhere in the kernel or the adapter, and nothing about NVIDIA in either: an
-AMD contributor runs the same binary as everybody else and it will use their card. What is missing
-is somebody having watched it happen.
+**Measured** by KingslayerKyle on a Radeon RX 7900 XT -- gfx1100, RDNA3, 42 CU at 2075 MHz, 20 GiB
+with a 17 GiB maximum allocation -- under AMD-APP 3679.0 on Windows 11, built from source at commit
+`fc8a78e`, 2026-08-23.
+
+**Every rung and every check passed, first run, with no changes to anything.** `cargo test
+--release` reported 6 of 6, including the differential against the real card. Device selection
+picked the card over the integrated gfx1036 correctly.
+
+Two rungs are worth naming, because they were the two open questions:
+
+- **Rung 6 -- bytes walked backwards -- passes.** That is the rung Mesa fails, and it is the exact
+  loop shape the peel kernel uses. Oclgrind had already cleared the kernel of every out-of-bounds
+  access; AMD's own compiler now runs it correctly. The Mesa fault is Mesa's, established rather
+  than inferred, and the non-blocking CI job can stay non-blocking on evidence.
+- **Rung 7 -- thirty-two bytes folded from registers, fully unrolled -- passes on RDNA3.** The
+  register-window design is not an NVIDIA-only trick, which the offline compile had suggested and
+  could not prove.
+
+No timing figure is quoted here for that card, deliberately. Two runs of the same binary at the
+same commit on the same machine disagreed by eight percent on the ratio and by forty percent on
+each side, because the bench was short enough to be measuring clock ramp. It now takes the best of
+three and says what it is measuring. A real end-to-end figure needs a full pass, which has not been
+run on that card.
+
+### What is still unwitnessed
+
+**One card, one architecture, one driver, one operating system.** That is what the section above
+buys and it is worth keeping the scope honest: GCN, RDNA1 and RDNA2 have not run this, and neither
+has `radeonsi` on Linux, which is the Mesa path that fails rung 6 in software. The claim that
+upgraded is "no AMD device has run this" to "one RDNA3 card under AMD-APP 3679.0 on Windows agrees
+with the processor byte for byte". It is not "AMD is covered".
+
+There is no vendor branch anywhere in the kernel or the adapter, so there is nothing to port for
+any of those -- what is missing is somebody having watched it happen.
 
 Two of the three things usually feared here turn out not to apply, and it is worth saying which:
 
@@ -358,9 +388,11 @@ stands in for the hardware meanwhile, in `.github/workflows/gpu.yml`:
 - **`clang -x cl` targeting `amdgcn` and `spir64`**, which puts the kernel through the front ends
   AMD and Intel actually ship, without a card and in about a second.
 
-Those three are not a GPU. **If you have an AMD device, running `gpuinfo` and pasting the output is
-worth more than all of them**, and it takes ten seconds. The Intel section above is what ten seconds
-of one machine bought.
+Those three are not a GPU. **If you have an AMD device that is not an RDNA3 card on Windows, or a
+Linux machine with a Radeon in it, running `gpuinfo` and pasting the output is worth more than all
+of them** -- and it takes ten seconds. The two sections above are what twenty seconds of two other
+people's machines bought: one closed the evidence gap outright, and the other found a bug in device
+selection that no amount of reading would have.
 
 ### The things most likely to be wrong on a device nobody here owns
 
@@ -372,6 +404,14 @@ work":
   megabytes and will meet this limit on small cards. `Device::fits` checks it and hands the batch
   back to the CPU rather than failing mid-upload, but the threshold has only ever been tested
   against one vendor's idea of it.
+- **One card, enumerated more than once.** On the 7900 XT machine two AMD platforms were
+  registered, 3679.0 and 3652.0, and each enumerated both physical GPUs -- four devices for two
+  cards. The two entries for the same card disagreed about its local memory, 32 KiB against 64,
+  which costs nothing here only because this kernel uses no local memory at all. They also tied on
+  every term the ranking had, so which one was picked came down to the order the loader returned
+  them in. The driver version is now the last tiebreak, newer first, and a repeat is marked in the
+  listing rather than hidden: the two entries are different drivers, and if one of them is the
+  broken one then naming the other is the whole remedy.
 - **Work group limits.** `CL_KERNEL_WORK_GROUP_SIZE` can be far below the device maximum when a
   kernel holds a lot in registers, and this one holds a whole stem. It is asked per kernel and
   rounded down to the device's preferred multiple — 64 on GCN, 32 on NVIDIA, 8 or 16 or 32 on

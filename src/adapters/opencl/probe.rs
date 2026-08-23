@@ -50,6 +50,12 @@ pub struct Candidate {
     /// declines to answer, the answer is taken as "not integrated", which puts the device back on
     /// the arithmetic rather than demoting it for its driver being terse.
     pub integrated: bool,
+    /// Whether some earlier entry is the same physical card under a different driver.
+    ///
+    /// Not a reason to drop it. See the comment where this is worked out: two platforms for one
+    /// card disagree about what the card can do, and naming the other one is how somebody gets
+    /// past a driver that misbehaves.
+    pub duplicate: bool,
 }
 
 impl Candidate {
@@ -58,7 +64,7 @@ impl Candidate {
     /// Compute units times clock is a poor model of throughput and an adequate model of "which
     /// of these two is the discrete card". That is the only question it has to answer, because
     /// the machines with a real choice to make are the ones with an iGPU next to a GPU.
-    fn rank(&self) -> u64 {
+    fn rank(&self) -> (u64, u64, u64) {
         // Three tiers, and the arithmetic only ever decides within one of them. That is the whole
         // point: a compute unit is not a comparable quantity across vendors -- an NVIDIA streaming
         // multiprocessor, an AMD compute unit and an Intel Xe core are different things counted
@@ -72,12 +78,54 @@ impl Candidate {
         // A CPU device would otherwise win on paper, since it reports every core as a compute
         // unit, while being the exact thing this adapter exists to avoid.
         let tier = match (self.is_gpu, self.integrated) {
-            (true, false) => 2_000_000_000,
-            (true, true) => 1_000_000_000,
+            (true, false) => 2,
+            (true, true) => 1,
             _ => 0,
         };
 
-        tier + u64::from(self.compute_units) * u64::from(self.clock_mhz.max(1))
+        // A tuple rather than a sum, so that the last term cannot ever outweigh the first two. It
+        // is a tiebreak and only a tiebreak, and adding it into a total is how a tiebreak quietly
+        // becomes a decision.
+        (
+            tier,
+            u64::from(self.compute_units) * u64::from(self.clock_mhz.max(1)),
+            self.driver_number(),
+        )
+    }
+
+    /// The leading number of the driver version, for choosing between two entries for one card.
+    ///
+    /// Measured on a Radeon RX 7900 XT, 2026-08-23: two AMD platforms were registered on the same
+    /// machine, 3679.0 and 3652.0, and **each enumerated both physical GPUs**. Four devices for two
+    /// cards. Without this the two entries for the 7900 XT tied on every term above and the winner
+    /// was whichever the loader happened to return first -- so the same machine could pick a
+    /// different driver between runs, and any bug report about it would be unreproducible.
+    ///
+    /// The two entries are not even equivalent: they disagreed about how much local memory the card
+    /// has, 32 KiB against 64. That costs nothing here, because this kernel uses no local memory at
+    /// all, and it is a good illustration of why every limit is read from the device rather than
+    /// assumed -- two drivers for one card do not have to agree.
+    ///
+    /// Newer wins. Not because newer is always better, but because it is a rule, and a contributor
+    /// who wants the other one can still name it: nothing is hidden from the listing.
+    fn driver_number(&self) -> u64 {
+        self.driver
+            .split(|c: char| !c.is_ascii_digit())
+            .find(|piece| !piece.is_empty())
+            .and_then(|piece| piece.parse().ok())
+            .unwrap_or(0)
+    }
+
+    /// What makes this the same piece of hardware as another entry, ignoring which driver is
+    /// describing it.
+    fn hardware(&self) -> (String, String, u32, u32, u64) {
+        (
+            self.name.clone(),
+            self.vendor.clone(),
+            self.compute_units,
+            self.clock_mhz,
+            self.global_mem,
+        )
     }
 
     /// One line for a listing, and the line a contributor is asked to paste into an issue.
@@ -87,9 +135,11 @@ impl Candidate {
              work group {} | {} | driver {} | platform {}",
             self.index,
             self.name,
-            match (self.is_gpu, self.integrated) {
-                (true, false) => "a card",
-                (true, true) => "integrated",
+            match (self.is_gpu, self.integrated, self.duplicate) {
+                (true, false, false) => "a card",
+                (true, false, true) => "a card, seen again under another driver",
+                (true, true, false) => "integrated",
+                (true, true, true) => "integrated, seen again under another driver",
                 _ => "not a GPU",
             },
             self.compute_units,
@@ -210,6 +260,18 @@ pub fn candidates(api: &Api, allow_cpu: bool) -> Result<Vec<Candidate>, String> 
 
     found.sort_by_key(|candidate| std::cmp::Reverse(candidate.rank()));
 
+    // One physical card can be enumerated once per registered platform, so the same hardware
+    // appears more than once. Marked rather than removed: the entries are not interchangeable --
+    // they are different drivers, and if one of them is the broken one, being able to name the
+    // other is the whole remedy. Hiding a device would take that away to make a listing tidier.
+    let mut seen: Vec<(String, String, u32, u32, u64)> = Vec::new();
+
+    for candidate in &mut found {
+        let hardware = candidate.hardware();
+        candidate.duplicate = seen.contains(&hardware);
+        seen.push(hardware);
+    }
+
     for (index, candidate) in found.iter_mut().enumerate() {
         candidate.index = index;
     }
@@ -251,6 +313,7 @@ fn describe_device(
         global_mem: number(api, device, CL_DEVICE_GLOBAL_MEM_SIZE).unwrap_or(0),
         max_alloc: number(api, device, CL_DEVICE_MAX_MEM_ALLOC_SIZE).unwrap_or(0),
         local_mem: number(api, device, CL_DEVICE_LOCAL_MEM_SIZE).unwrap_or(0),
+        duplicate: false,
         integrated: number::<cl_uint>(api, device, CL_DEVICE_HOST_UNIFIED_MEMORY).unwrap_or(0) != 0,
     })
 }

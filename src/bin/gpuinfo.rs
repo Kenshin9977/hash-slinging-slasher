@@ -758,6 +758,25 @@ fn disagreement(ours: &[u64], theirs: &[u64]) -> String {
 /// Both sides are given the same work and timed end to end, transfers included. Timing the kernel
 /// alone would flatter the device by hiding the upload, and the upload is real: a peeled batch is
 /// hundreds of megabytes and crosses the bus once per batch.
+/// How many times each side is timed.
+///
+/// Three loses a run that collided with something else on the machine, and is few enough that
+/// nobody waits for it.
+const ROUNDS: usize = 3;
+
+/// The shortest of [`ROUNDS`] runs of `work`.
+fn fastest(mut work: impl FnMut()) -> f64 {
+    let mut best = f64::MAX;
+
+    for _ in 0..ROUNDS {
+        let started = Instant::now();
+        work();
+        best = best.min(started.elapsed().as_secs_f64());
+    }
+
+    best
+}
+
 fn bench(device: &opencl::Device) -> String {
     let mut out = String::from("\ntiming, same work both sides, transfers included\n\n");
 
@@ -802,13 +821,26 @@ fn bench(device: &opencl::Device) -> String {
 
     let candidates = request.forward();
 
-    let started = Instant::now();
-    let _ = device.sweep(&request);
-    let on_device = started.elapsed().as_secs_f64();
+    // Best of several, both sides, rather than one run each.
+    //
+    // Measured on a Radeon RX 7900 XT, 2026-08-23: two runs of the same binary at the same commit
+    // on the same machine gave 0.06s and 0.09s on the device against 0.53s and 0.76s on the
+    // processor -- both sides moving by about forty percent while every other line of the report
+    // stayed byte for byte identical. At those durations it was timing clock ramp and whatever
+    // else the machine was doing, and publishing that as a card's speedup would have been
+    // publishing noise with a decimal point on it.
+    //
+    // Fastest rather than mean, because the fastest run is the one least polluted by everything
+    // that is not the work.
+    let on_device = fastest(|| {
+        let _ = device.sweep(&request);
+    });
 
-    let started = Instant::now();
-    let _ = Cpu::new().sweep(&request);
-    let on_cpu = started.elapsed().as_secs_f64();
+    let cpu = Cpu::new();
+
+    let on_cpu = fastest(|| {
+        let _ = cpu.sweep(&request);
+    });
 
     out.push_str(&format!(
         "  {candidates} candidates ({:.2}B)\n",
@@ -823,6 +855,16 @@ fn bench(device: &opencl::Device) -> String {
         candidates as f64 / on_cpu / 1e6
     ));
     out.push_str(&format!("  {:.1}x\n", on_cpu / on_device));
+
+    // Said next to the number, because the number will be quoted without whatever is said about it
+    // elsewhere. A tester on a 7900 XT read two runs of this eight percent apart and was right to
+    // ask what it was measuring before letting it into the documentation.
+    out.push_str(&format!(
+        "\n  Best of {ROUNDS} each, and this times the kernel rather than a pass. The peeled set\n  \
+         here is twenty million entries, and a processor with a large cache holds far more of\n  \
+         that than it could during a real batch -- so the figure understates the device rather\n  \
+         than flattering it.\n"
+    ));
 
     let _ = BASIS;
 
