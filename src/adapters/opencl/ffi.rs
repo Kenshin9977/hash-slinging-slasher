@@ -56,6 +56,7 @@ pub const CL_DEVICE_MAX_CLOCK_FREQUENCY: cl_uint = 0x100C;
 pub const CL_DEVICE_MAX_MEM_ALLOC_SIZE: cl_uint = 0x1010;
 pub const CL_DEVICE_GLOBAL_MEM_SIZE: cl_uint = 0x101F;
 pub const CL_DEVICE_LOCAL_MEM_SIZE: cl_uint = 0x1023;
+pub const CL_DEVICE_HOST_UNIFIED_MEMORY: cl_uint = 0x1035;
 pub const CL_DEVICE_AVAILABLE: cl_uint = 0x1027;
 pub const CL_DEVICE_COMPILER_AVAILABLE: cl_uint = 0x1028;
 pub const CL_DEVICE_NAME: cl_uint = 0x102B;

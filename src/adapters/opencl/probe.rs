@@ -38,6 +38,18 @@ pub struct Candidate {
     /// failing halfway through one.
     pub max_alloc: u64,
     pub local_mem: u64,
+    /// Whether this device shares the processor's memory, which is what an integrated GPU is.
+    ///
+    /// The best signal OpenCL gives for telling an iGPU from a card, and much better than the
+    /// arithmetic below: a compute unit means something different at every vendor -- an NVIDIA
+    /// streaming multiprocessor, an AMD compute unit and an Intel Xe core are not comparable
+    /// quantities -- so units times clock is only meaningful between two devices of the same
+    /// kind. Whether the memory is shared is a fact about the hardware and not a score.
+    ///
+    /// Deprecated in OpenCL 2.0 and still answered by every driver in the field. When a driver
+    /// declines to answer, the answer is taken as "not integrated", which puts the device back on
+    /// the arithmetic rather than demoting it for its driver being terse.
+    pub integrated: bool,
 }
 
 impl Candidate {
@@ -47,16 +59,25 @@ impl Candidate {
     /// of these two is the discrete card". That is the only question it has to answer, because
     /// the machines with a real choice to make are the ones with an iGPU next to a GPU.
     fn rank(&self) -> u64 {
-        let raw = u64::from(self.compute_units) * u64::from(self.clock_mhz.max(1));
+        // Three tiers, and the arithmetic only ever decides within one of them. That is the whole
+        // point: a compute unit is not a comparable quantity across vendors -- an NVIDIA streaming
+        // multiprocessor, an AMD compute unit and an Intel Xe core are different things counted
+        // with the same word -- so units times clock is a reasonable tiebreak between two cards
+        // and a bad way to choose between a card and an iGPU.
+        //
+        //   a card                    a fact about the hardware, so it wins outright
+        //   an integrated GPU         better than the processor, worse than any card
+        //   anything else             a CPU runtime, only ever reached deliberately
+        //
+        // A CPU device would otherwise win on paper, since it reports every core as a compute
+        // unit, while being the exact thing this adapter exists to avoid.
+        let tier = match (self.is_gpu, self.integrated) {
+            (true, false) => 2_000_000_000,
+            (true, true) => 1_000_000_000,
+            _ => 0,
+        };
 
-        // A discrete GPU beats anything the CPU runtime offers, even when the arithmetic says
-        // otherwise: a CPU device reports every core as a compute unit and would win on paper
-        // while being the thing this adapter exists to avoid.
-        if self.is_gpu {
-            raw + 1_000_000_000
-        } else {
-            raw
-        }
+        tier + u64::from(self.compute_units) * u64::from(self.clock_mhz.max(1))
     }
 
     /// One line for a listing, and the line a contributor is asked to paste into an issue.
@@ -66,7 +87,11 @@ impl Candidate {
              work group {} | {} | driver {} | platform {}",
             self.index,
             self.name,
-            if self.is_gpu { "GPU" } else { "not a GPU" },
+            match (self.is_gpu, self.integrated) {
+                (true, false) => "a card",
+                (true, true) => "integrated",
+                _ => "not a GPU",
+            },
             self.compute_units,
             self.clock_mhz,
             self.global_mem as f64 / (1u64 << 30) as f64,
@@ -226,6 +251,7 @@ fn describe_device(
         global_mem: number(api, device, CL_DEVICE_GLOBAL_MEM_SIZE).unwrap_or(0),
         max_alloc: number(api, device, CL_DEVICE_MAX_MEM_ALLOC_SIZE).unwrap_or(0),
         local_mem: number(api, device, CL_DEVICE_LOCAL_MEM_SIZE).unwrap_or(0),
+        integrated: number::<cl_uint>(api, device, CL_DEVICE_HOST_UNIFIED_MEMORY).unwrap_or(0) != 0,
     })
 }
 
