@@ -1,0 +1,71 @@
+# Builds `gpuinfo` for the three platforms and uploads it, so that somebody with hardware nobody
+# here owns can run it without installing Rust.
+#
+# Deliberately not the `*-binaries.yml` workflows next to this one. Those commit executables into
+# `bin/`, only run on `main`, and refuse to run in a fork on purpose -- a fork rebuilding `bin/`
+# has cost this project several submissions. This one commits nothing: it attaches the executables
+# to the run as artifacts, which is the right shape for handing one to a tester and leaves no trace
+# in the tree.
+#
+# `gpuinfo` needs no data files, no snapshot and no game. It opens a device, checks it against the
+# processor on the same bytes, and writes a report. That is the whole thing somebody is being asked
+# to run, and it should cost them a download and ten seconds.
+
+name: gpu binaries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/adapters/**'
+      - 'src/ports/**'
+      - 'src/bin/gpuinfo.rs'
+      - '.github/workflows/gpu-binaries.yml'
+
+concurrency:
+  group: gpu-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      # One platform failing should not deny the others to whoever is waiting for them.
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            runner: windows-latest
+            binary: gpuinfo.exe
+          # Not `ubuntu-latest`. A binary built against a newer glibc refuses to start on an older
+          # distribution, and the person being asked to run this did not volunteer to debug that.
+          # 22.04's glibc is old enough to cover nearly everything still in use.
+          - name: linux
+            runner: ubuntu-22.04
+            binary: gpuinfo
+          - name: macos
+            runner: macos-latest
+            binary: gpuinfo
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo build --release --bin gpuinfo
+
+      # Proof the thing runs at all before it is handed to anybody. On a runner with no graphics
+      # driver it prints that it found no device and exits zero, which is the correct behaviour and
+      # is worth confirming: it is what every contributor without a GPU will see.
+      - name: run it once
+        run: ./target/release/${{ matrix.binary }} --small
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gpuinfo-${{ matrix.name }}
+          path: target/release/${{ matrix.binary }}
+          if-no-files-found: error
+          # Long enough to matter, short enough that a stale executable does not go on being
+          # handed out after the kernel has moved.
+          retention-days: 30
