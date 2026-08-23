@@ -40,6 +40,7 @@
 
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 /// Set on the child, so that the device it opens does not go looking for a child of its own.
 pub const PROBED: &str = "SLASHER_GPU_PROBED";
@@ -57,6 +58,17 @@ pub fn is_probe() -> bool {
 /// `Ok(())` also covers "there was no way to check", which is the right answer: the alternative
 /// is refusing to use a working GPU because a helper binary was not shipped alongside.
 pub fn survives_a_build() -> Result<(), String> {
+    // Asked once per process, however many devices are opened in it. Whether this driver survives
+    // being handed a kernel cannot change while the program runs, and the check costs a process
+    // and a build -- so paying it per `Device::open` was buying the same answer repeatedly. It
+    // also means two threads opening devices at once wait for one check rather than racing to
+    // start two children.
+    static ANSWER: OnceLock<Result<(), String>> = OnceLock::new();
+
+    ANSWER.get_or_init(ask_the_driver).clone()
+}
+
+fn ask_the_driver() -> Result<(), String> {
     // The child must not recurse, and neither must a caller who has already been checked.
     if std::env::var_os(PROBED).is_some() || is_probe() {
         return Ok(());

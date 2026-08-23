@@ -165,7 +165,19 @@ jobs:
         env:
           SLASHER_GPU_ALLOW_CPU: "1"
 
-      - run: cargo test --release --test backend
+      # One thread. PoCL faults, intermittently, when two OpenCL contexts are created at once in
+      # one process -- which the test binary does, because two of its tests each open a device of
+      # their own. Reproduced on a four-core machine: parallel faults most runs, single-threaded
+      # passes twelve out of twelve. It is not the guard (it faults with the guard disabled and
+      # with the probe binary removed), and it is not this adapter's sharing, because each device
+      # has its own context and its own queue and shares nothing between them. NVIDIA and Intel
+      # run these same tests in parallel without complaint.
+      #
+      # Serialised only here, and only for that reason. A real pass opens one device per process,
+      # so nothing about this reaches anybody grinding. If it were made a blanket
+      # `--test-threads=1` it would stop being a statement about PoCL and start being a place for
+      # a genuine concurrency bug to hide.
+      - run: cargo test --release --test backend -- --test-threads=1
         env:
           SLASHER_GPU_ALLOW_CPU: "1"
 

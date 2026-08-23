@@ -1,11 +1,9 @@
-# Builds `gpuinfo` for the three platforms and uploads it, so that somebody with hardware nobody
-# here owns can run it without installing Rust.
+# Builds `gpuinfo` for the three platforms and publishes it where a link is enough.
 #
 # Deliberately not the `*-binaries.yml` workflows next to this one. Those commit executables into
 # `bin/`, only run on `main`, and refuse to run in a fork on purpose -- a fork rebuilding `bin/`
-# has cost this project several submissions. This one commits nothing: it attaches the executables
-# to the run as artifacts, which is the right shape for handing one to a tester and leaves no trace
-# in the tree.
+# has cost this project several submissions. This one commits nothing to the tree: it attaches the
+# executables to the run and puts them in a prerelease.
 #
 # `gpuinfo` needs no data files, no snapshot and no game. It opens a device, checks it against the
 # processor on the same bytes, and writes a report. That is the whole thing somebody is being asked
@@ -39,33 +37,39 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Windows links Microsoft's C runtime dynamically by default, so the executable needs
+          # vcruntime140.dll to start. Nearly every Windows machine has it, because nearly every
+          # game installs it, and nearly is not the promise being made here: somebody is being
+          # asked to run one file and send back what it writes, and "install the Visual C++
+          # redistributable first" is exactly the round trip this branch exists to avoid. Linking
+          # it in costs a hundred kilobytes.
           - name: windows
             runner: windows-latest
             binary: gpuinfo.exe
+            asset: gpuinfo-windows.exe
             rustflags: -C target-feature=+crt-static
-          # Not `ubuntu-latest`. A binary built against a newer glibc refuses to start on an older
-          # distribution, and the person being asked to run this did not volunteer to debug that.
-          # 22.04's glibc is old enough to cover nearly everything still in use.
+
+          # Not `ubuntu-latest`, and not statically linked either. A binary built against a newer
+          # glibc refuses to start on an older distribution, and the person being asked to run
+          # this did not volunteer to debug that -- but a *static* glibc cannot `dlopen`, which is
+          # how the OpenCL loader is found at run time. So the compatibility problem is solved by
+          # building somewhere old instead.
           - name: linux
             runner: ubuntu-22.04
             binary: gpuinfo
+            asset: gpuinfo-linux
             rustflags: ''
+
           - name: macos
             runner: macos-latest
             binary: gpuinfo
+            asset: gpuinfo-macos
             rustflags: ''
 
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      # Windows links Microsoft's C runtime dynamically by default, which means the executable
-      # needs vcruntime140.dll to start. Nearly every Windows machine has it -- every game
-      # installs it -- and nearly is not the promise being made. Somebody is being asked to run
-      # one file and send back a report, and "install the Visual C++ redistributable first" is
-      # exactly the round trip this whole thing exists to avoid.
-      #
-      # Static linking costs a few hundred kilobytes and removes the dependency entirely.
       - run: cargo build --release --bin gpuinfo
         env:
           RUSTFLAGS: ${{ matrix.rustflags }}
@@ -76,11 +80,81 @@ jobs:
       - name: run it once
         run: ./target/release/${{ matrix.binary }} --small
 
+      # Named for its platform here, so the three can sit in one release together and so that what
+      # somebody downloads says on the tin which one it is.
+      - name: name it after its platform
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "target/release/${{ matrix.binary }}" "out/${{ matrix.asset }}"
+
       - uses: actions/upload-artifact@v4
         with:
           name: gpuinfo-${{ matrix.name }}
-          path: target/release/${{ matrix.binary }}
+          path: out/${{ matrix.asset }}
           if-no-files-found: error
-          # Long enough to matter, short enough that a stale executable does not go on being
-          # handed out after the kernel has moved.
           retention-days: 30
+
+  release:
+    name: publish where a link is enough
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+          merge-multiple: true
+
+      - run: ls -l downloaded
+
+      # A release rather than only the artifacts above, because an artifact needs a GitHub account,
+      # several clicks through the Actions tab, arrives wrapped in a zip and expires in thirty
+      # days. A release is a link that anyone can open. Somebody spending ten seconds on this
+      # should spend them running the thing, not finding it.
+      #
+      # One moving tag rather than a version per build: this is a preview of a branch, and what
+      # anybody wants is the current one. `gh` ships on the runner, so no third-party action is
+      # pulled in to do it -- the same reason nothing else here has a dependency.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: gpu-opencl-preview
+        run: |
+          set -eu
+
+          cat > notes.md <<'EOF'
+          Built from `gpu/opencl` by CI, and run once on the machine that built it before being
+          published.
+
+          **One file, nothing to install.** No Rust, no SDK, no graphics toolkit, no game data. On
+          Windows the C runtime is linked in, so there is no Visual C++ redistributable to fetch
+          either.
+
+          Run it. It opens whatever GPU the machine has, checks that device against the processor
+          on the same bytes, and writes `gpuinfo-report.txt` beside itself. **That file is what to
+          send back** -- whether it worked or not.
+
+          It climbs ten checks from trivial upward, each in its own process, so a failure names
+          itself instead of needing a second round of "try this instead". A machine with no GPU, or
+          one whose driver cannot build the kernel, is told so plainly and is not an error: the
+          grind runs on the processor exactly as it always has.
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" downloaded/* --clobber
+            gh release edit "$TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" downloaded/* \
+              --title "gpuinfo - OpenCL preview" \
+              --notes-file notes.md \
+              --prerelease \
+              --target "$GITHUB_SHA"
+          fi
+
+          {
+            echo "### Download"
+            gh release view "$TAG" --json assets --jq '.assets[] | "- [\(.name)](\(.url))"'
+          } >> "$GITHUB_STEP_SUMMARY"
