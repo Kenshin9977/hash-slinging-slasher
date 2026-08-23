@@ -342,6 +342,10 @@ const CHECKS: &[(&str, Check)] = &[
     ("the hash itself", known_vectors),
     ("the forward sweep", sweep_agrees),
     ("the backward peel", peel_agrees),
+    (
+        "the sweep with the table left on the host",
+        sweep_without_the_table,
+    ),
     ("a stem longer than the register window", long_stems),
     ("an empty batch", degenerate),
 ];
@@ -558,6 +562,25 @@ fn sweep_agrees(device: &opencl::Device) -> Result<String, String> {
     Err(disagreement(&ours, &theirs))
 }
 
+/// The same forward sweep, with the peeled table deliberately kept off the device.
+///
+/// A card too small for the table takes this path by itself, and the author has no such card -- so
+/// without forcing it here the path would be untested code shipped to precisely the people it was
+/// written for. Each check runs in a process of its own, so setting this affects nothing else.
+///
+/// It also gives every contributor a free comparison of the two: if the survivors that come back
+/// and the answers the device reached on its own ever differ, one of the two membership tests is
+/// wrong, and this is the run that says so.
+fn sweep_without_the_table(device: &opencl::Device) -> Result<String, String> {
+    std::env::set_var(opencl::NO_TABLE, "1");
+
+    let outcome = sweep_agrees(device);
+
+    std::env::remove_var(opencl::NO_TABLE);
+
+    outcome
+}
+
 /// The backward peel, compared element for element in the layout both sides write.
 fn peel_agrees(device: &opencl::Device) -> Result<String, String> {
     let scale = scale();
@@ -599,7 +622,41 @@ fn peel_agrees(device: &opencl::Device) -> Result<String, String> {
         ));
     }
 
-    Ok(format!("{} peeled entries, identical", ours.len()))
+    // And again in small pieces, which is what a card too small for the whole answer does.
+    //
+    // Three rows at a time makes several seams inside this fixture, and a seam is where the row
+    // offsets and the un-peeled row are easy to put in the wrong place -- an error that would only
+    // ever appear on somebody else's smaller card, which is the worst place for it to first
+    // appear. Forced here so it appears on every card instead.
+    std::env::set_var(opencl::PEEL_ROWS, "3");
+
+    let chunked = device.peel(&request).map_err(|why| why.to_string());
+
+    std::env::remove_var(opencl::PEEL_ROWS);
+
+    let chunked = chunked?;
+
+    if let Some(at) = chunked.iter().zip(&ours).position(|(a, b)| a != b) {
+        return Err(format!(
+            "peeled in pieces, entry {at} of {} differs: in pieces {:016x}, whole {:016x}",
+            ours.len(),
+            chunked[at],
+            ours[at],
+        ));
+    }
+
+    if chunked.len() != ours.len() {
+        return Err(format!(
+            "peeled in pieces returned {} entries, whole returned {}",
+            chunked.len(),
+            ours.len()
+        ));
+    }
+
+    Ok(format!(
+        "{} peeled entries, identical whole and in pieces",
+        ours.len()
+    ))
 }
 
 /// Stems past the thirty-two byte window, which take the kernel's slow path.

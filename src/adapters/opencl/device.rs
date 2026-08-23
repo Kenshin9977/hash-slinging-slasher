@@ -65,11 +65,14 @@ pub struct Device {
     /// kernel that uses many registers gets a smaller one, and on AMD and Intel it frequently
     /// does. Asked per kernel, after the build, because that is the only time the answer exists.
     sweep_group: usize,
+    filtered_group: usize,
     peel_group: usize,
 }
 
 struct Kernels {
     sweep: cl_kernel,
+    /// The same sweep without the table, for a device that cannot hold one.
+    filtered: cl_kernel,
     peel: cl_kernel,
 }
 
@@ -172,13 +175,17 @@ impl Device {
         };
 
         let sweep = kernel(&api, program, "sweep");
+        let filtered = kernel(&api, program, "sweep_filtered");
         let peel = kernel(&api, program, "peel");
 
-        let (sweep, peel) = match (sweep, peel) {
-            (Ok(sweep), Ok(peel)) => (sweep, peel),
-            (sweep, peel) => {
+        let (sweep, filtered, peel) = match (sweep, filtered, peel) {
+            (Ok(sweep), Ok(filtered), Ok(peel)) => (sweep, filtered, peel),
+            (sweep, filtered, peel) => {
                 unsafe {
                     if let Ok(kernel) = sweep {
+                        (api.release_kernel)(kernel);
+                    }
+                    if let Ok(kernel) = filtered {
                         (api.release_kernel)(kernel);
                     }
                     if let Ok(kernel) = peel {
@@ -193,6 +200,7 @@ impl Device {
         };
 
         let sweep_group = group_limit(&api, sweep, &info);
+        let filtered_group = group_limit(&api, filtered, &info);
         let peel_group = group_limit(&api, peel, &info);
 
         Ok(Self {
@@ -201,8 +209,13 @@ impl Device {
             context,
             queue,
             program,
-            kernels: Mutex::new(Kernels { sweep, peel }),
+            kernels: Mutex::new(Kernels {
+                sweep,
+                filtered,
+                peel,
+            }),
             sweep_group,
+            filtered_group,
             peel_group,
         })
     }
@@ -478,6 +491,7 @@ impl Drop for Device {
         unsafe {
             if let Ok(kernels) = self.kernels.get_mut() {
                 (self.api.release_kernel)(kernels.sweep);
+                (self.api.release_kernel)(kernels.filtered);
                 (self.api.release_kernel)(kernels.peel);
             }
 
@@ -515,21 +529,57 @@ impl Backend for Device {
             ));
         }
 
-        let mut hit_room = HITS;
+        // Whether the peeled set can go with it decides which of the two sweeps runs.
+        //
+        // With the table on the device the whole question is answered there, which is the fast
+        // path and is what any card with room should do. Without it, the bitmaps still go -- they
+        // are the part that matters, and the part that is random-access -- and the survivors come
+        // back for the binary search to finish here.
+        //
+        // The alternative, and what this did, was to decline: a card too small for the table did
+        // not sweep at all and the pass ran on the processor. That is most laptop cards. Falling
+        // back one step instead of all the way is the difference between them helping and not.
+        let with_table = std::env::var_os(super::NO_TABLE).is_none()
+            && self
+                .fits(&[
+                    ("the stems", stems.bytes.len()),
+                    (
+                        "the peeled set",
+                        std::mem::size_of_val(request.peeled.hashes),
+                    ),
+                    (
+                        "the coarse bitmap",
+                        std::mem::size_of_val(request.peeled.coarse),
+                    ),
+                    (
+                        "the fine bitmap",
+                        std::mem::size_of_val(request.peeled.fine),
+                    ),
+                    ("the hit buffer", HITS * std::mem::size_of::<u64>()),
+                ])
+                .is_ok();
+
+        let mut room = HITS;
 
         loop {
-            match self.sweep_once(request, hit_room)? {
+            let swept = if with_table {
+                self.sweep_once(request, room)?
+            } else {
+                self.sweep_filtered_once(request, room)?
+            };
+
+            match swept {
                 Swept::Done(hits) => return Ok(hits),
                 // The kernel counts every hit, including the ones it had nowhere to put, so the
                 // retry is sized exactly rather than doubled blindly.
                 Swept::Overflowed(wanted) => {
-                    if hit_room >= wanted {
+                    if room >= wanted {
                         return Err(Unsupported::new(
                             "the device kept overflowing the hit buffer",
                         ));
                     }
 
-                    hit_room = wanted;
+                    room = wanted;
                 }
             }
         }
@@ -538,51 +588,212 @@ impl Backend for Device {
     fn peel(&self, request: &PeelRequest<'_>) -> Result<Vec<u64>, Unsupported> {
         let endings = request.endings;
         let rows = endings.len() + usize::from(request.no_ending);
-        let count = request.spellings.len() * rows;
+        let spellings = request.spellings.len();
+        let count = spellings * rows;
 
         if count == 0 {
             return Ok(Vec::new());
         }
 
-        if request.spellings.len() > u32::MAX as usize || rows > u32::MAX as usize {
+        if spellings > u32::MAX as usize || rows > u32::MAX as usize {
             return Err(Unsupported::new("more to peel than the kernel indexes"));
         }
 
-        let out_bytes = count * std::mem::size_of::<u64>();
-
+        // The inputs are held for the whole peel; only the output is cut up.
         self.fits(&[
-            ("the wanted ids", request.spellings.len() * 8),
+            ("the wanted ids", spellings * 8),
             ("the endings", endings.bytes.len()),
-            ("the peeled set", out_bytes),
         ])?;
 
-        let spellings = self.upload(request.spellings, CL_MEM_READ_ONLY)?;
-        let bytes = self.upload(&endings.bytes, CL_MEM_READ_ONLY)?;
-        let offsets = self.upload(&endings.offsets, CL_MEM_READ_ONLY)?;
-        let lengths = self.upload(&endings.lengths, CL_MEM_READ_ONLY)?;
-        let out = self.allocate(out_bytes, CL_MEM_WRITE_ONLY)?;
+        let rows_at_once = self.rows_that_fit(spellings, rows)?;
+
+        let spellings_on_device = self.upload(request.spellings, CL_MEM_READ_ONLY)?;
+        let mut peeled = vec![0_u64; count];
+
+        // Whole rows at a time. A row is one ending against every wanted id, rows are independent,
+        // and the kernel already writes ending-major -- so a chunk is a contiguous run of the
+        // answer and lands in it with no rearranging.
+        //
+        // Declining the whole peel instead, which is what this did, sent the backward half to the
+        // processor entirely on any card too small for the output in one piece. That is the half
+        // that most needs a device: on a processor it is dwarfed by the forward sweep, and once
+        // the sweep moves it is most of what is left. A pass with an accelerated sweep and a
+        // processor-bound peel tops out well below the sweep's own speedup, which is Amdahl and
+        // not tuning.
+        let mut done = 0;
+
+        while done < rows {
+            let taking = rows_at_once.min(rows - done);
+
+            // Row zero is the un-peeled spelling itself, and belongs to the first chunk only.
+            let no_ending = request.no_ending && done == 0;
+            let first_ending = done.saturating_sub(usize::from(request.no_ending));
+            let endings_here = taking - usize::from(no_ending);
+
+            let wanted: Vec<u32> = (first_ending..first_ending + endings_here)
+                .map(|ending| ending as u32)
+                .collect();
+
+            let slice = endings.subset(&wanted);
+
+            let bytes = self.upload(&slice.bytes, CL_MEM_READ_ONLY)?;
+            let offsets = self.upload(&slice.offsets, CL_MEM_READ_ONLY)?;
+            let lengths = self.upload(&slice.lengths, CL_MEM_READ_ONLY)?;
+
+            let out_bytes = taking * spellings * std::mem::size_of::<u64>();
+            let out = self.allocate(out_bytes, CL_MEM_WRITE_ONLY)?;
+
+            {
+                let kernels = self.kernels.lock().map_err(poisoned)?;
+                let mut args = Args::new(&self.api, kernels.peel);
+
+                args.mem(&spellings_on_device)?;
+                args.u32(spellings as u32)?;
+                args.mem(&bytes)?;
+                args.mem(&offsets)?;
+                args.mem(&lengths)?;
+                args.u32(endings_here as u32)?;
+                args.u32(u32::from(no_ending))?;
+                args.u64(crate::PRIME_INVERSE)?;
+                args.mem(&out)?;
+
+                self.launch(kernels.peel, spellings, self.peel_group)?;
+            }
+
+            let at = done * spellings;
+            self.read(&out, &mut peeled[at..at + taking * spellings])?;
+
+            done += taking;
+        }
+
+        Ok(peeled)
+    }
+}
+
+impl Device {
+    /// How many rows of the peel this device can hold at once.
+    ///
+    /// One row is every wanted id against one ending. The limit is whichever of the two device
+    /// limits bites first, and both do in practice: a single buffer is commonly capped at a
+    /// quarter of the card's memory, and taking all of the rest of it takes the desktop with it.
+    fn rows_that_fit(&self, spellings: usize, rows: usize) -> Result<usize, Unsupported> {
+        let row_bytes = spellings * std::mem::size_of::<u64>();
+
+        let budget = {
+            let per_buffer = if self.info.max_alloc > 0 {
+                self.info.max_alloc
+            } else {
+                u64::MAX
+            };
+
+            let overall = if self.info.global_mem > 0 {
+                (self.info.global_mem as f64 * MEMORY_HEADROOM) as u64
+            } else {
+                u64::MAX
+            };
+
+            per_buffer.min(overall)
+        };
+
+        let fits = match std::env::var(super::PEEL_ROWS)
+            .ok()
+            .and_then(|n| n.parse().ok())
+        {
+            Some(forced) if forced > 0 => forced,
+            _ => (budget / row_bytes.max(1) as u64) as usize,
+        };
+
+        if fits == 0 {
+            return Err(Unsupported::new(format!(
+                "one row of the peel is {:.2} GiB, which {} cannot hold at all",
+                row_bytes as f64 / (1u64 << 30) as f64,
+                self.info.name,
+            )));
+        }
+
+        Ok(fits.min(rows))
+    }
+}
+
+impl Device {
+    /// The sweep that stops at the bitmaps, with the binary search finished here.
+    ///
+    /// The survivors are roughly one percent of the candidates, so what comes back over the bus is
+    /// small; the table never crosses it at all. The search itself is `slice::binary_search`, which
+    /// is the same call the processor adapter makes -- so there is exactly one binary search in
+    /// this process, and no second implementation of membership living in the place that is
+    /// hardest to debug.
+    fn sweep_filtered_once(
+        &self,
+        request: &SweepRequest<'_>,
+        room: usize,
+    ) -> Result<Swept, Unsupported> {
+        let stems = request.stems;
+        let peeled = &request.peeled;
+
+        self.fits(&[
+            ("the stems", stems.bytes.len()),
+            ("the coarse bitmap", std::mem::size_of_val(peeled.coarse)),
+            ("the fine bitmap", std::mem::size_of_val(peeled.fine)),
+            ("the survivors", room * 2 * std::mem::size_of::<u64>()),
+        ])?;
+
+        let bytes = self.upload(&stems.bytes, CL_MEM_READ_ONLY)?;
+        let offsets = self.upload(&stems.offsets, CL_MEM_READ_ONLY)?;
+        let lengths = self.upload(&stems.lengths, CL_MEM_READ_ONLY)?;
+        let openings = self.upload(request.openings, CL_MEM_READ_ONLY)?;
+        let coarse = self.upload(peeled.coarse, CL_MEM_READ_ONLY)?;
+        let fine = self.upload(peeled.fine, CL_MEM_READ_ONLY)?;
+        let marks = self.allocate(room * std::mem::size_of::<u64>(), CL_MEM_WRITE_ONLY)?;
+        let hashes = self.allocate(room * std::mem::size_of::<u64>(), CL_MEM_WRITE_ONLY)?;
+        let counter = self.upload(&[0_u32], CL_MEM_READ_WRITE)?;
 
         {
             let kernels = self.kernels.lock().map_err(poisoned)?;
-            let mut args = Args::new(&self.api, kernels.peel);
+            let mut args = Args::new(&self.api, kernels.filtered);
 
-            args.mem(&spellings)?;
-            args.u32(request.spellings.len() as u32)?;
             args.mem(&bytes)?;
             args.mem(&offsets)?;
             args.mem(&lengths)?;
-            args.u32(endings.len() as u32)?;
-            args.u32(u32::from(request.no_ending))?;
-            args.u64(crate::PRIME_INVERSE)?;
-            args.mem(&out)?;
+            args.u32(stems.len() as u32)?;
+            args.mem(&openings)?;
+            args.u32(request.openings.len() as u32)?;
+            args.u32(u32::from(request.bare))?;
+            args.u64(crate::BASIS)?;
+            args.mem(&coarse)?;
+            args.u32(peeled.coarse_bits)?;
+            args.mem(&fine)?;
+            args.u32(peeled.fine_bits)?;
+            args.mem(&marks)?;
+            args.mem(&hashes)?;
+            args.mem(&counter)?;
+            args.u32(room as u32)?;
 
-            self.launch(kernels.peel, request.spellings.len(), self.peel_group)?;
+            self.launch(kernels.filtered, stems.len(), self.filtered_group)?;
         }
 
-        let mut peeled = vec![0_u64; count];
-        self.read(&out, &mut peeled)?;
+        let mut survived = [0_u32; 1];
+        self.read(&counter, &mut survived)?;
+        let survived = survived[0] as usize;
 
-        Ok(peeled)
+        if survived > room {
+            return Ok(Swept::Overflowed(survived));
+        }
+
+        let mut marks_back = vec![0_u64; survived];
+        let mut hashes_back = vec![0_u64; survived];
+
+        self.read(&marks, &mut marks_back)?;
+        self.read(&hashes, &mut hashes_back)?;
+
+        let hits = marks_back
+            .into_iter()
+            .zip(hashes_back)
+            .filter(|(_, hash)| peeled.hashes.binary_search(hash).is_ok())
+            .map(|(mark, _)| mark)
+            .collect();
+
+        Ok(Swept::Done(hits))
     }
 }
 

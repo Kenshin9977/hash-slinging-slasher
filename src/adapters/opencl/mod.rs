@@ -47,3 +47,18 @@ pub const OVERRIDE: &str = "SLASHER_GPU";
 /// GPU -- against PoCL, and against Mesa's Rusticl, which compiles OpenCL C through the same path
 /// it uses on a Radeon. That is the closest anyone here can currently get to AMD.
 pub const ALLOW_CPU: &str = "SLASHER_GPU_ALLOW_CPU";
+
+/// Sweep without putting the peeled table on the device, whether or not it would fit.
+///
+/// The adapter picks this by itself on a card too small for the table. Forcing it is how the path
+/// gets exercised on a card that is *not* too small -- which is every card the author has, and
+/// would otherwise be untested code shipped to the people it was written for.
+pub const NO_TABLE: &str = "SLASHER_GPU_NO_TABLE";
+
+/// Cap how many rows of the peel go to the device at once.
+///
+/// The adapter works this out from the device's own limits, and on any card with room the answer
+/// is "all of them" -- so the chunking would never run on the machines the author has. Forcing a
+/// small number is how the seams between chunks get exercised, and the seams are where the
+/// un-peeled row and the row offsets are easy to put in the wrong place.
+pub const PEEL_ROWS: &str = "SLASHER_GPU_PEEL_ROWS";

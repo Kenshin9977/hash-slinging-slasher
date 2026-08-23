@@ -275,3 +275,82 @@ __kernel void peel(__global const ulong* spellings,
         }
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// Forward, for a device that cannot hold the peeled set
+
+// The same sweep, stopping at the bitmaps and handing the survivors back.
+//
+// `sweep` above keeps the sorted peeled set on the device and finishes the question there. At the
+// sizes this project reaches that table is hundreds of megabytes, and a card that cannot hold it
+// was being told it could not help at all -- which is most laptop cards, and a large share of the
+// people who would otherwise be contributing.
+//
+// So this one carries no table. It folds, probes both bitmaps, and writes out every candidate that
+// survived them together with the hash it produced; the host finishes with the binary search it
+// was always going to do in one place or the other. What crosses the bus is the survivors, which
+// the filter keeps to a little over one percent, and what never crosses it at all is the table.
+//
+// Device memory then scales with the batch of stems rather than with the peeled set, which is the
+// whole point: the batch is a size this adapter chooses, and the peeled set is not.
+__kernel void sweep_filtered(__global const uchar* stem_bytes,
+                             __global const uint*  stem_offset,
+                             __global const uint*  stem_length,
+                             uint                  stem_count,
+                             __global const ulong* openings,
+                             uint                  opening_count,
+                             uint                  bare,
+                             ulong                 basis,
+                             __global const ulong* coarse,
+                             uint                  coarse_bits,
+                             __global const ulong* fine,
+                             uint                  fine_bits,
+                             __global ulong*       marks,
+                             __global ulong*       hashes,
+                             __global uint*        found,
+                             uint                  room)
+{
+    const uint stride = get_global_size(0);
+
+    for (uint s = get_global_id(0); s < stem_count; s += stride) {
+        const uint at = stem_offset[s];
+        const uint len = stem_length[s];
+
+        uint4 a, b;
+        load_window(stem_bytes, at, &a, &b);
+
+        const uint tail_from = at + 32;
+        const uint tail_to = at + len;
+        const bool has_tail = len > 32;
+
+        if (bare != 0) {
+            ulong h = fold_window(basis, a, b, len);
+            if (has_tail) h = fold_tail(h, stem_bytes, tail_from, tail_to);
+
+            if (filter_holds(coarse, coarse_bits, fine, fine_bits, h)) {
+                uint slot = atomic_inc(found);
+
+                if (slot < room) {
+                    marks[slot] = ((ulong)s << 32) | (ulong)BARE;
+                    hashes[slot] = h;
+                }
+            }
+        }
+
+        for (uint j = 0; j < opening_count; j++) {
+            ulong h = fold_window(openings[j], a, b, len);
+            if (has_tail) h = fold_tail(h, stem_bytes, tail_from, tail_to);
+
+            if (filter_holds(coarse, coarse_bits, fine, fine_bits, h)) {
+                // Counted past `room` on purpose, exactly as `sweep` does, so an overflow is known
+                // to the byte rather than guessed at and the retry is sized once.
+                uint slot = atomic_inc(found);
+
+                if (slot < room) {
+                    marks[slot] = ((ulong)s << 32) | (ulong)j;
+                    hashes[slot] = h;
+                }
+            }
+        }
+    }
+}
