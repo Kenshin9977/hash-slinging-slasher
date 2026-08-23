@@ -14,6 +14,7 @@
 mod device;
 pub mod ffi;
 pub mod guard;
+pub mod ladder;
 mod probe;
 
 pub use device::Device;

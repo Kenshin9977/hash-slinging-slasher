@@ -39,3 +39,6 @@ __pycache__/
 # committed because it is the format's documentation.
 /plans/*
 !/plans/example.txt
+
+# The report gpuinfo writes for somebody to send. Theirs, not the repository.
+gpuinfo-report.txt

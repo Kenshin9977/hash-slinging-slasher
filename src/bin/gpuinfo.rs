@@ -17,6 +17,7 @@
 //! cargo run --release --bin gpuinfo -- --bench
 //! ```
 
+use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use slasher::adapters::cpu::Cpu;
@@ -31,49 +32,367 @@ fn main() {
         std::process::exit(probe());
     }
 
-    println!("{}", opencl::report());
+    // One rung, or one check, started by the run below. Both say what happened through their exit
+    // code, because what starts them is a program and not a person.
+    if let Some(rung) = numbered("--rung") {
+        std::process::exit(run_one_rung(rung));
+    }
 
-    let device = match opencl::Device::open() {
-        Ok(Some(device)) => device,
+    if let Some(index) = numbered("--check") {
+        std::process::exit(run_one_check(index));
+    }
+
+    let mut report = Report::open();
+
+    report.say(&preamble());
+    report.say(&opencl::report());
+
+    match opencl::Device::open() {
+        Ok(Some(_)) => {}
         Ok(None) => {
-            println!("Nothing to check: no device was opened.");
-            return;
+            report.say("\nNothing to check: no device was opened.\n");
+            report.finish(0);
         }
         Err(why) => {
-            println!("A device was found and could not be used:\n\n{why}");
-            std::process::exit(1);
+            report.say(&format!(
+                "\nA device was found and could not be used:\n\n{why}\n"
+            ));
+            report.finish(1);
         }
+    }
+
+    // The ladder first. When something is wrong this is what says *what*, and it says it before
+    // the full checks get a chance to fail in a way that needs interpreting.
+    let mut failures = climb(&mut report);
+    failures += full_checks(&mut report);
+
+    if std::env::args().any(|argument| argument == "--bench") {
+        // In this process: it is a measurement rather than a check, and by the time it runs the
+        // device has already been proved survivable by everything above.
+        match opencl::Device::open() {
+            Ok(Some(device)) => report.say(&bench(&device)),
+            _ => report.say("\n(no device to time)\n"),
+        }
+    }
+
+    if failures == 0 {
+        report.say("\nEverything passed. This device can be trusted with a pass.\n");
+        report.finish(0);
+    }
+
+    report.say(&format!(
+        "\n{failures} thing(s) failed. The lowest failing rung is the specific one; anything \
+         below it is a consequence of it.\n"
+    ));
+
+    report.finish(1);
+}
+
+/// The file a person is asked to send, and the reason this program writes one at all.
+///
+/// Somebody with a Radeon is doing us a favour and gets one run. Scrollback gets truncated, gets
+/// pasted without the device line at the top, gets reformatted by a chat client. A file does not.
+const REPORT: &str = "gpuinfo-report.txt";
+
+/// The report, written as it happens rather than at the end.
+///
+/// Buffering it would be tidier and was tried, and it is wrong for exactly the reason this whole
+/// program exists: a driver that takes the process down takes the buffer with it, and what reaches
+/// the person helping is a segmentation fault and an empty screen. Every line is printed and
+/// flushed to disk as it is produced, so a run that dies halfway still leaves a report that says
+/// where it got to.
+struct Report {
+    file: Option<std::fs::File>,
+}
+
+impl Report {
+    fn open() -> Self {
+        Self {
+            file: std::fs::File::create(REPORT).ok(),
+        }
+    }
+
+    fn say(&mut self, text: &str) {
+        print!("{text}");
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        if let Some(file) = &mut self.file {
+            let _ = std::io::Write::write_all(file, text.as_bytes());
+            let _ = std::io::Write::flush(file);
+        }
+    }
+
+    fn finish(&mut self, code: i32) -> ! {
+        if self.file.is_none() {
+            println!("\n(could not write {REPORT}; the text above is the whole report)");
+        } else if code == 0 {
+            println!("\n(also saved to {REPORT})");
+        } else {
+            println!(
+                "\nPlease send {REPORT}. It has everything needed to work out what is wrong with \
+                 this device, so that nobody has to ask you to go and try something else."
+            );
+        }
+
+        std::process::exit(code)
+    }
+}
+
+/// What the report opens with: the things that are true of the machine rather than the device.
+fn preamble() -> String {
+    format!(
+        "hash-slinging-slasher GPU report\n\
+         {}\n\
+         built for {} on {}\n\n",
+        std::env::current_exe()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "?".to_owned()),
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+    )
+}
+
+// ---------------------------------------------------------------------------------------------
+// The capability ladder
+
+/// The number after a flag, if that flag was given.
+fn numbered(flag: &str) -> Option<usize> {
+    let mut args = std::env::args();
+
+    while let Some(argument) = args.next() {
+        if argument == flag {
+            return args.next().and_then(|n| n.parse().ok());
+        }
+    }
+
+    None
+}
+
+/// What a child process said about the one thing it was asked to do.
+struct Outcome {
+    /// A short word for the column: `ok`, `WRONG`, `CRASHED`.
+    verdict: String,
+    /// Whatever the child had to say, whether it succeeded or not.
+    detail: String,
+    /// Whether this counts against the device.
+    bad: bool,
+}
+
+/// Runs this program again, for one numbered piece of work, and interprets how it ended.
+///
+/// The whole design rests on this: a child that is killed rather than exiting has told us
+/// something no return value could, and it has told us without taking the report with it.
+fn ask_a_child(flag: &str, index: usize) -> Outcome {
+    let Ok(me) = std::env::current_exe() else {
+        return Outcome {
+            verdict: "skipped".to_owned(),
+            detail: "cannot find this program on disk to run it again".to_owned(),
+            bad: false,
+        };
     };
 
-    println!("checking {} against the CPU\n", Backend::name(&device));
+    let mut command = Command::new(&me);
+
+    command
+        .arg(flag)
+        .arg(index.to_string())
+        .env(opencl::guard::PROBED, "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    // The child has to work at the same size as the parent was asked to, or a report taken with
+    // `--small` would quietly be a report of something else.
+    if std::env::args().any(|argument| argument == "--small") {
+        command.arg("--small");
+    }
+
+    match command.output() {
+        Err(why) => Outcome {
+            verdict: "skipped".to_owned(),
+            detail: format!("could not start it: {why}"),
+            bad: false,
+        },
+        Ok(done) => {
+            let said = String::from_utf8_lossy(&done.stderr);
+            let noted = String::from_utf8_lossy(&done.stdout);
+
+            let detail = if said.trim().is_empty() {
+                noted.trim().to_owned()
+            } else {
+                said.trim().to_owned()
+            };
+
+            match done.status.code() {
+                Some(0) => Outcome {
+                    verdict: "ok".to_owned(),
+                    detail,
+                    bad: false,
+                },
+                Some(1) => Outcome {
+                    verdict: "WRONG".to_owned(),
+                    detail,
+                    bad: true,
+                },
+                Some(2) => Outcome {
+                    verdict: "no device".to_owned(),
+                    detail,
+                    bad: false,
+                },
+                Some(3) => Outcome {
+                    verdict: "skipped".to_owned(),
+                    detail,
+                    bad: false,
+                },
+                Some(code) => Outcome {
+                    verdict: format!("exit {code}"),
+                    detail,
+                    bad: true,
+                },
+                // Killed rather than having exited: the driver took the process down. This is the
+                // case the whole arrangement exists for.
+                None => Outcome {
+                    verdict: "CRASHED".to_owned(),
+                    detail: "the driver took the process down".to_owned(),
+                    bad: true,
+                },
+            }
+        }
+    }
+}
+
+/// One rung, in this process, reporting through the exit code and stderr.
+fn run_one_rung(rung: usize) -> i32 {
+    if rung >= opencl::ladder::RUNGS.len() {
+        return 3;
+    }
+
+    match opencl::Device::open() {
+        Ok(Some(device)) => match opencl::ladder::run(&device, rung) {
+            Ok(()) => 0,
+            Err(why) => {
+                eprintln!("{why}");
+                1
+            }
+        },
+        Ok(None) => 3,
+        Err(why) => {
+            eprintln!("{why}");
+            2
+        }
+    }
+}
+
+/// Climbs the ladder, each rung in a process of its own, writing as it goes.
+///
+/// Separate processes because a driver that faults takes its process with it, and a ladder that
+/// stopped at the first fault would lose exactly the rungs that say how far the damage reaches. A
+/// rung that dies is recorded as having died, and the next one still runs.
+fn climb(report: &mut Report) -> u32 {
+    report.say(
+        "\ncapability ladder -- one thing per rung, lowest first, each in its own process\n\n",
+    );
+
+    let mut failures = 0;
+    let mut first_bad: Option<usize> = None;
+
+    for (index, rung) in opencl::ladder::RUNGS.iter().enumerate() {
+        let outcome = ask_a_child("--rung", index);
+
+        if outcome.bad {
+            failures += 1;
+            first_bad.get_or_insert(index);
+        }
+
+        report.say(&format!(
+            "  {:>2}  {:<9} {}\n",
+            index + 1,
+            outcome.verdict,
+            rung.what
+        ));
+
+        if !outcome.detail.is_empty() {
+            report.say(&format!("      {}\n", outcome.detail));
+        }
+
+        if outcome.bad {
+            report.say(&format!("      what that means: {}\n", rung.so_what));
+        }
+    }
+
+    if let Some(index) = first_bad {
+        report.say(&format!(
+            "\n  Lowest rung that failed: {} -- {}.\n  {}\n",
+            index + 1,
+            opencl::ladder::RUNGS[index].what,
+            opencl::ladder::RUNGS[index].so_what,
+        ));
+    }
+
+    failures
+}
+
+// ---------------------------------------------------------------------------------------------
+// The full checks, run the same way and for the same reason
+
+type Check = fn(&opencl::Device) -> Result<String, String>;
+
+/// Every full check, in the order that makes a failure easiest to read.
+const CHECKS: &[(&str, Check)] = &[
+    ("the hash itself", known_vectors),
+    ("the forward sweep", sweep_agrees),
+    ("the backward peel", peel_agrees),
+    ("a stem longer than the register window", long_stems),
+    ("an empty batch", degenerate),
+];
+
+/// One check, in this process, saying what happened through its exit code.
+fn run_one_check(index: usize) -> i32 {
+    let Some((_, check)) = CHECKS.get(index) else {
+        return 3;
+    };
+
+    match opencl::Device::open() {
+        Ok(Some(device)) => match check(&device) {
+            Ok(note) => {
+                // On stdout rather than stderr, so the parent can tell a note apart from a reason.
+                print!("{note}");
+                0
+            }
+            Err(why) => {
+                eprintln!("{why}");
+                1
+            }
+        },
+        Ok(None) => 3,
+        Err(why) => {
+            eprintln!("{why}");
+            2
+        }
+    }
+}
+
+/// Runs every full check, each in its own process.
+fn full_checks(report: &mut Report) -> u32 {
+    report.say("\nfull checks, against the CPU on the same bytes\n\n");
 
     let mut failures = 0;
 
-    failures += check("the hash itself", known_vectors(&device));
-    failures += check("the forward sweep", sweep_agrees(&device));
-    failures += check("the backward peel", peel_agrees(&device));
-    failures += check(
-        "a stem longer than the register window",
-        long_stems(&device),
-    );
-    failures += check("an empty batch", degenerate(&device));
+    for (index, (name, _)) in CHECKS.iter().enumerate() {
+        let outcome = ask_a_child("--check", index);
 
-    if std::env::args().any(|argument| argument == "--bench") {
-        bench(&device);
+        if outcome.bad {
+            failures += 1;
+        }
+
+        report.say(&format!("  {:<9} {name}\n", outcome.verdict));
+
+        if !outcome.detail.is_empty() {
+            report.say(&format!("      {}\n", outcome.detail));
+        }
     }
 
-    println!();
-
-    if failures == 0 {
-        println!("All checks passed. This device can be trusted with a pass.");
-    } else {
-        println!(
-            "{failures} check(s) failed. Please open an issue with everything printed above -- \
-             including the device line at the top, which is the part that identifies what is \
-             different about your machine."
-        );
-        std::process::exit(1);
-    }
+    failures
 }
 
 /// Open a device, build the kernel, ask it one question, and exit.
@@ -114,22 +433,6 @@ fn scale() -> usize {
         1
     } else {
         100
-    }
-}
-
-fn check(what: &str, outcome: Result<String, String>) -> u32 {
-    match outcome {
-        Ok(note) => {
-            println!(
-                "  ok    {what}{}{note}",
-                if note.is_empty() { "" } else { " -- " }
-            );
-            0
-        }
-        Err(why) => {
-            println!("  FAIL  {what}\n          {why}");
-            1
-        }
     }
 }
 
@@ -455,8 +758,8 @@ fn disagreement(ours: &[u64], theirs: &[u64]) -> String {
 /// Both sides are given the same work and timed end to end, transfers included. Timing the kernel
 /// alone would flatter the device by hiding the upload, and the upload is real: a peeled batch is
 /// hundreds of megabytes and crosses the bus once per batch.
-fn bench(device: &opencl::Device) {
-    println!("\ntiming, same work both sides, transfers included\n");
+fn bench(device: &opencl::Device) -> String {
+    let mut out = String::from("\ntiming, same work both sides, transfers included\n\n");
 
     let openings: Vec<u64> = (0..170)
         .map(|n| hash64(&format!("weapons/tier{n}/")))
@@ -507,19 +810,21 @@ fn bench(device: &opencl::Device) {
     let _ = Cpu::new().sweep(&request);
     let on_cpu = started.elapsed().as_secs_f64();
 
-    println!(
-        "  {candidates} candidates ({:.2}B)",
+    out.push_str(&format!(
+        "  {candidates} candidates ({:.2}B)\n",
         candidates as f64 / 1e9
-    );
-    println!(
-        "  device  {on_device:>7.2}s   {:>8.2}M/s",
+    ));
+    out.push_str(&format!(
+        "  device  {on_device:>7.2}s   {:>8.2}M/s\n",
         candidates as f64 / on_device / 1e6
-    );
-    println!(
-        "  CPU     {on_cpu:>7.2}s   {:>8.2}M/s",
+    ));
+    out.push_str(&format!(
+        "  CPU     {on_cpu:>7.2}s   {:>8.2}M/s\n",
         candidates as f64 / on_cpu / 1e6
-    );
-    println!("  {:.1}x", on_cpu / on_device);
+    ));
+    out.push_str(&format!("  {:.1}x\n", on_cpu / on_device));
 
     let _ = BASIS;
+
+    out
 }

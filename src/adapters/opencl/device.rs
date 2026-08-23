@@ -211,6 +211,100 @@ impl Device {
         &self.info
     }
 
+    /// Runs one rung of the capability ladder and hands back what the device produced.
+    ///
+    /// Its own program, built here and thrown away: a driver that cannot build the real kernel may
+    /// well build these, and finding out which of the two it choked on is itself a result. The
+    /// ladder runs once per process -- each rung is its own child, so that one that faults does not
+    /// take the rest of the report with it -- so building per call costs nothing worth saving.
+    ///
+    /// See `ladder.rs` for why any of this exists.
+    pub fn run_rung(
+        &self,
+        kernel: &str,
+        input: &[u64],
+        bytes: &[u8],
+        arg: u64,
+    ) -> Result<Vec<u64>, Unsupported> {
+        let n = input.len();
+
+        let program = build_source(&self.api, self.context, &self.info, super::ladder::SOURCE)
+            .map_err(Unsupported::new)?;
+
+        let program = Owned {
+            api: &self.api,
+            program,
+        };
+
+        let Ok(entry) = kernel_named(&self.api, program.program, kernel) else {
+            return Err(Unsupported::new(format!(
+                "the ladder has no kernel {kernel}"
+            )));
+        };
+
+        let entry = OwnedKernel {
+            api: &self.api,
+            kernel: entry,
+        };
+
+        // Uploaded zeroed rather than merely reserved, because one rung counts into it and has to
+        // start from nothing.
+        let out_start = vec![0_u64; n];
+
+        let in_buffer = self.upload(input, CL_MEM_READ_ONLY)?;
+        let byte_buffer = self.upload(bytes, CL_MEM_READ_ONLY)?;
+        let out_buffer = self.upload(&out_start, CL_MEM_READ_WRITE)?;
+
+        {
+            let _guard = self.kernels.lock().map_err(poisoned)?;
+            let mut args = Args::new(&self.api, entry.kernel);
+
+            args.mem(&in_buffer)?;
+            args.mem(&byte_buffer)?;
+            args.mem(&out_buffer)?;
+            args.u32(n as u32)?;
+            args.u64(arg)?;
+
+            // Deliberately fewer work items than there are values, so that the rung which walks a
+            // grid stride actually has to stride. Every other rung guards on the index and simply
+            // leaves the tail alone -- which is why this is a quarter and not, say, a half: it has
+            // to be small enough to stride more than once on any device, and the rungs that do not
+            // stride are launched at full width just below.
+            let local = group_limit(&self.api, entry.kernel, &self.info).clamp(1, 64);
+
+            let global = if kernel == "rung_grid_stride" {
+                local
+            } else {
+                n.div_ceil(local).max(1) * local
+            };
+
+            let status = unsafe {
+                (self.api.enqueue_nd_range_kernel)(
+                    self.queue,
+                    entry.kernel,
+                    1,
+                    ptr::null(),
+                    &global,
+                    &local,
+                    0,
+                    ptr::null(),
+                    ptr::null_mut(),
+                )
+            };
+
+            check(status, "launching a ladder kernel")?;
+            check(
+                unsafe { (self.api.finish)(self.queue) },
+                "waiting for a ladder kernel",
+            )?;
+        }
+
+        let mut out = vec![0_u64; n];
+        self.read(&out_buffer, &mut out)?;
+
+        Ok(out)
+    }
+
     /// Whether a set of buffers fits, checked before a single one is allocated.
     ///
     /// Both limits matter and they are different questions. `max_alloc` is per buffer and is
@@ -572,10 +666,24 @@ impl Device {
 // Building, and the plumbing under it
 
 fn build(api: &Api, context: cl_context, info: &Candidate) -> Result<cl_program, String> {
-    let source =
-        CString::new(SOURCE).map_err(|_| "the kernel source has a NUL in it".to_owned())?;
+    build_source(api, context, info, SOURCE)
+}
+
+/// The same, for any source.
+///
+/// The ladder is built through here too, so that a driver refusing it produces the same captured
+/// build log as one refusing the real kernel -- and so that the two attempts at build options are
+/// made for both. A device that builds one and not the other has said something useful, and it can
+/// only say it if both were asked the same way.
+fn build_source(
+    api: &Api,
+    context: cl_context,
+    info: &Candidate,
+    code: &str,
+) -> Result<cl_program, String> {
+    let source = CString::new(code).map_err(|_| "the kernel source has a NUL in it".to_owned())?;
     let pointer = source.as_ptr();
-    let length = SOURCE.len();
+    let length = code.len();
     let mut status = CL_SUCCESS;
 
     let program =
@@ -631,6 +739,11 @@ fn build(api: &Api, context: cl_context, info: &Candidate) -> Result<cl_program,
         info.platform_name,
         log.trim(),
     ))
+}
+
+/// A kernel out of a built program, by name. The ladder's reading of the same thing.
+fn kernel_named(api: &Api, program: cl_program, name: &str) -> Result<cl_kernel, ()> {
+    kernel(api, program, name)
 }
 
 fn kernel(api: &Api, program: cl_program, name: &str) -> Result<cl_kernel, ()> {
@@ -711,6 +824,31 @@ fn check(status: cl_int, what: &str) -> Result<(), Unsupported> {
 
 fn poisoned<T>(_: T) -> Unsupported {
     Unsupported::new("a previous launch panicked and left the device unusable")
+}
+
+/// A program that releases itself, for the ladder's build-and-throw-away.
+struct Owned<'a> {
+    api: &'a Api,
+    program: cl_program,
+}
+
+impl Drop for Owned<'_> {
+    fn drop(&mut self) {
+        unsafe { (self.api.release_program)(self.program) };
+    }
+}
+
+/// The same, for a kernel. Declared after `Owned` so that it is dropped before the program it
+/// came out of, which is the order a driver expects.
+struct OwnedKernel<'a> {
+    api: &'a Api,
+    kernel: cl_kernel,
+}
+
+impl Drop for OwnedKernel<'_> {
+    fn drop(&mut self) {
+        unsafe { (self.api.release_kernel)(self.kernel) };
+    }
 }
 
 /// A device buffer that releases itself.
