@@ -42,3 +42,6 @@ __pycache__/
 
 # The report gpuinfo writes for somebody to send. Theirs, not the repository.
 gpuinfo-report.txt
+
+# Crash debris from a shell that fell over. Never part of a submission.
+*.stackdump
