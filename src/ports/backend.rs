@@ -87,6 +87,36 @@ impl StemBatch {
         }
     }
 
+    /// A batch holding only the stems named, renumbered from zero.
+    ///
+    /// For re-sweeping a sample on the processor to check what a device answered. Copied rather
+    /// than borrowed: a sample is a few thousand stems out of millions, and the copy is cheaper
+    /// than any arrangement that would let a backend read a scattered subset.
+    pub fn subset(&self, wanted: &[u32]) -> Self {
+        let mut bytes = Vec::with_capacity(wanted.len() * 24);
+        let mut offsets = Vec::with_capacity(wanted.len());
+        let mut lengths = Vec::with_capacity(wanted.len());
+
+        for stem in wanted {
+            let at = self.offsets[*stem as usize] as usize;
+            let len = self.lengths[*stem as usize] as usize;
+
+            offsets.push(bytes.len() as u32);
+            lengths.push(len as u32);
+            bytes.extend_from_slice(&self.bytes[at..at + len]);
+        }
+
+        // The same padding the packing adds, for the same reason: a kernel reads a whole register
+        // window past a stem's start, and a subset is a batch like any other.
+        bytes.resize(bytes.len() + PACKED_BYTES, 0);
+
+        Self {
+            bytes,
+            offsets,
+            lengths,
+        }
+    }
+
     pub fn len(&self) -> usize {
         self.offsets.len()
     }
@@ -108,6 +138,7 @@ impl StemBatch {
 /// most of the time -- the failure mode this project fears most is a search that looks healthy
 /// and matches nothing, and a second membership test with its own sizing rules is exactly how
 /// that happens.
+#[derive(Clone, Copy)]
 pub struct PeeledSet<'a> {
     pub hashes: &'a [u64],
     pub coarse: &'a [u64],

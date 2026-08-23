@@ -177,9 +177,14 @@ jobs:
       # so nothing about this reaches anybody grinding. If it were made a blanket
       # `--test-threads=1` it would stop being a statement about PoCL and start being a place for
       # a genuine concurrency bug to hide.
+      # PoCL is installed by the step above specifically so the differential has something to
+      # compare against. Without this the test would skip when the ICD is not picked up, and a
+      # skipped test and a passing test are the same line in a log -- the job would go green having
+      # compared nothing at all.
       - run: cargo test --release --test backend -- --test-threads=1
         env:
           SLASHER_GPU_ALLOW_CPU: "1"
+          SLASHER_GPU_REQUIRED: "1"
 
   oclgrind:
     name: bounds and races in the kernel

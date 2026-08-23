@@ -7,10 +7,12 @@
 
 pub mod cpu;
 pub mod opencl;
+pub mod verify;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::ports::{Backend, Hit, PeelRequest, SweepRequest, Unsupported};
+use verify::{Trust, Verdict};
 
 pub use cpu::Cpu;
 
@@ -26,6 +28,15 @@ pub struct Preferred {
     device: Option<opencl::Device>,
     cpu: Cpu,
     explained: AtomicBool,
+    /// How many batches the device has turned down.
+    ///
+    /// Counted rather than only announced once. Saying it a single time and going quiet leaves a
+    /// device that declines *every* batch looking exactly like one that declined once, which is
+    /// the same indistinguishability the first message existed to prevent -- moved one line
+    /// later. The total is reported at the end of the run.
+    declined: AtomicUsize,
+    /// Whether the device is still believed. See `verify`.
+    trust: Trust,
 }
 
 impl Preferred {
@@ -47,6 +58,8 @@ impl Preferred {
                 device,
                 cpu: Cpu::new(),
                 explained: AtomicBool::new(false),
+                declined: AtomicUsize::new(0),
+                trust: Trust::default(),
             },
             notice,
         )
@@ -58,6 +71,8 @@ impl Preferred {
             device: None,
             cpu: Cpu::new(),
             explained: AtomicBool::new(true),
+            declined: AtomicUsize::new(0),
+            trust: Trust::default(),
         }
     }
 
@@ -66,9 +81,39 @@ impl Preferred {
     }
 
     fn explain_once(&self, why: &Unsupported) {
+        self.declined.fetch_add(1, Ordering::Relaxed);
+
         if !self.explained.swap(true, Ordering::Relaxed) {
             println!("  falling back to the CPU for this batch: {why}");
         }
+    }
+
+    /// What the device did across the whole run, said once at the end.
+    ///
+    /// The first refusal is announced and the rest were silent, which leaves a device that turned
+    /// down *every* batch looking exactly like one that turned down a single batch -- the same
+    /// indistinguishability the first message existed to prevent, moved one line later. Somebody
+    /// who believes they ground on a GPU and did not is precisely the person whose report is
+    /// unusable.
+    pub fn epilogue(&self) -> Option<String> {
+        self.device.as_ref()?;
+
+        if self.trust.broken() {
+            return Some(
+                "the device was put away part way through this run, because it stopped agreeing \
+                 with the processor. Everything after that was swept on the processor, so the \
+                 names are sound -- but please run `gpuinfo` and send what it writes."
+                    .to_owned(),
+            );
+        }
+
+        let declined = self.declined.load(Ordering::Relaxed);
+
+        (declined > 0).then(|| {
+            format!(
+                "{declined} batch(es) went to the processor because the device turned them down"
+            )
+        })
     }
 }
 
@@ -81,9 +126,21 @@ impl Backend for Preferred {
     }
 
     fn sweep(&self, request: &SweepRequest<'_>) -> Result<Vec<Hit>, Unsupported> {
-        if let Some(device) = &self.device {
+        if let Some(device) = self.device.as_ref().filter(|_| !self.trust.broken()) {
             match device.sweep(request) {
-                Ok(hits) => return Ok(hits),
+                Ok(hits) => {
+                    // Every batch, and not once at the start. A fixture proves a kernel *can* be
+                    // right; only this proves it still is, at the shape a pass actually has.
+                    match verify::check(request, &hits, &self.cpu) {
+                        Verdict::Agreed | Verdict::Skipped => return Ok(hits),
+                        Verdict::Disagreed(what) => {
+                            // Not a fallback. The two have come apart, so the batch is thrown
+                            // away rather than half-believed, and the device is done for this run.
+                            self.trust.break_it();
+                            println!("\n  {what}\n");
+                        }
+                    }
+                }
                 Err(why) => self.explain_once(&why),
             }
         }
@@ -92,7 +149,7 @@ impl Backend for Preferred {
     }
 
     fn peel(&self, request: &PeelRequest<'_>) -> Result<Vec<u64>, Unsupported> {
-        if let Some(device) = &self.device {
+        if let Some(device) = self.device.as_ref().filter(|_| !self.trust.broken()) {
             match device.peel(request) {
                 Ok(peeled) => return Ok(peeled),
                 Err(why) => self.explain_once(&why),

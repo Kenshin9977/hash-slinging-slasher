@@ -322,6 +322,10 @@ impl<'a> Meet<'a> {
             drop(peeled);
         }
 
+        if let Some(said) = backend.epilogue() {
+            println!("\n  {said}");
+        }
+
         println!(
             "swept {:.1}B forward hashes in {:.0}s, {} matched",
             forward.load(Ordering::Relaxed) as f64 / 1e9,
