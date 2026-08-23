@@ -1,0 +1,131 @@
+# Publishes `bootstrap` where somebody who does not have the repository can get it.
+#
+# This one cannot live in `bin/` like the others, and that is the whole point of it: `bin/` is
+# inside the repository, and the person it is for does not have the repository yet. Every other
+# instruction here starts with a path they cannot reach.
+#
+# So it goes to a release, which is a link. No GitHub account, no Actions tab, no zip to unpack,
+# and it does not expire the way an artifact does.
+
+name: bootstrap
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'src/bin/bootstrap.rs'
+      - 'src/startup.rs'
+      - '.github/workflows/bootstrap.yml'
+
+concurrency:
+  group: bootstrap-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The C runtime is linked in on Windows. Without it the executable wants
+          # vcruntime140.dll, and being told to go and install a Microsoft redistributable is
+          # exactly the wall this file exists to remove -- it would arrive as an unhelpful dialog
+          # rather than as a sentence.
+          - name: windows
+            runner: windows-latest
+            binary: bootstrap.exe
+            asset: bootstrap-windows.exe
+            rustflags: -C target-feature=+crt-static
+
+          # Built somewhere old rather than linked statically: a binary made against a newer glibc
+          # refuses to start on an older distribution, and static glibc brings its own problems.
+          - name: linux
+            runner: ubuntu-22.04
+            binary: bootstrap
+            asset: bootstrap-linux
+            rustflags: ''
+
+          - name: macos
+            runner: macos-latest
+            binary: bootstrap
+            asset: bootstrap-macos
+            rustflags: ''
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - run: cargo build --release --bin bootstrap
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+
+      - name: name it after its platform
+        shell: bash
+        run: |
+          mkdir -p out
+          cp "target/release/${{ matrix.binary }}" "out/${{ matrix.asset }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bootstrap-${{ matrix.name }}
+          path: out/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: publish
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: downloaded
+          merge-multiple: true
+
+      - run: ls -l downloaded
+
+      # A moving tag, and `latest` in the README points at it. Somebody arriving from Discord
+      # wants the current one; nobody arriving that way wants to choose a version.
+      #
+      # `gh` ships on the runner, so this pulls in no third-party action -- the same reason
+      # nothing else in this repository has a dependency.
+      - name: publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: bootstrap
+        run: |
+          set -eu
+
+          cat > notes.md <<'EOF'
+          **Download the one for your computer and run it.** That is the whole setup.
+
+          - Windows: `bootstrap-windows.exe`
+          - Linux: `bootstrap-linux`
+          - macOS: `bootstrap-macos`
+
+          It downloads the project, installs the two tools it needs if they are missing, and hands
+          over to the project's own setup, which works out what is worth grinding on your machine
+          and offers to run it.
+
+          You do not need the game. You do not need to know what git is. You do not need to have
+          used a terminal. The only step nobody can do for you is signing in to GitHub, and it
+          prints the exact command for that, full path included.
+
+          If it goes wrong, whatever it printed is the useful thing to paste into the Discord.
+          EOF
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" downloaded/* --clobber
+            gh release edit "$TAG" --notes-file notes.md --latest
+          else
+            gh release create "$TAG" downloaded/* \
+              --title "Start here" \
+              --notes-file notes.md \
+              --latest \
+              --target "$GITHUB_SHA"
+          fi

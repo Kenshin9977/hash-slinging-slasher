@@ -38,7 +38,28 @@ pass runs, your assistant is just waiting on a process.
 Usage goes on deciding what to try and reading a short summary afterwards: a few thousand tokens
 for an hour of grinding. A whole night is cheap.
 
+## Never done anything like this before?
+
+**Download one file and run it.** That is the whole of it.
+
+→ **[Get `bootstrap` for your computer](../../releases/latest)**
+
+It downloads the project, installs the two tools it needs if they are missing, and hands over to
+the setup below. You do not need to know what git is, and you do not need to have used a terminal.
+
+The only thing it cannot do for you is sign you in to GitHub, because that opens a browser and
+asks you to approve it — and it prints the exact command to run, full path included.
+[`docs/SETUP.md`](docs/SETUP.md) walks through that part for somebody who has never seen a
+terminal before.
+
+If any of this goes wrong, say so in the Discord. Somebody getting stuck here is a bug in these
+instructions, not in you — the sentence that prompted all of the above was *"the tutorial feels
+confusing cuz i just see code and get confused"*, and that was a fair thing to say.
+
 ## What you need
+
+Everything from here on assumes you already have the project on your computer. If you do not, use
+the file above; if you would rather do it yourself, `git clone` this repository.
 
 **One command.** On Windows:
 

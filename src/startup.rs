@@ -20,7 +20,7 @@
 use std::path::Path;
 
 use crate::{
-    config, disk, github, paths, readiness, recon, snapshot, tables, update, LOW_VALUE_POOLS,
+    config, disk, github, offer, paths, readiness, recon, snapshot, tables, update, LOW_VALUE_POOLS,
 };
 
 /// Where findings go, and therefore whose open pull requests are worth reading.
@@ -324,12 +324,16 @@ fn report(landscape: &recon::Landscape) {
 
     let game = which_game();
     library();
-    suggest(&game);
+    let offers = suggest(&game);
 
     println!(
         "\nSubmit after each job rather than at the end of the night, and do not ask first --\n\
          `submit` re-checks all of this at the moment of sending and drops anything already taken."
     );
+
+    // Only ever reaches a person at a terminal. An assistant, or a CI job, sees exactly what
+    // it saw before this existed -- which is what `AGENTS.md` promises it.
+    offer::ask(&offers);
 }
 
 /// Which game to grind next, and why -- chosen rather than asked.
@@ -534,7 +538,8 @@ fn first_docstring_line(path: &Path) -> Option<String> {
 ///
 /// It is a suggestion and says so. Anything in `METHODS.md` is a legitimate choice, and inventing
 /// something that is not in it is the best choice of all.
-fn suggest(game: &str) {
+fn suggest(game: &str) -> Vec<offer::Offer> {
+    let mut chosen: Vec<offer::Offer> = Vec::new();
     let ran = methods_already_run();
 
     // Every suggested command carries the game, so following it verbatim grinds the right one.
@@ -644,6 +649,10 @@ fn suggest(game: &str) {
         );
 
         offered += 1;
+        chosen.push(offer::Offer {
+            command: format!("confirm_cw --sounds{fold}{on}"),
+            gist: "the largest unnamed ground in either game".to_owned(),
+        });
     }
 
     for (label, command, what) in ladder {
@@ -653,6 +662,10 @@ fn suggest(game: &str) {
 
         println!("  {command}{on}\n      {what}\n");
         offered += 1;
+        chosen.push(offer::Offer {
+            command: format!("{command}{on}"),
+            gist: what.split(". ").next().unwrap_or(what).to_owned(),
+        });
 
         if offered == 2 {
             break;
@@ -678,6 +691,8 @@ fn suggest(game: &str) {
         println!("   method is just a script that prints names. See METHODS.md and");
         println!("   scripts/README.md.)");
     }
+
+    chosen
 }
 
 /// Which methods this clone has run, from the label each run folder carries in its name.
@@ -773,7 +788,7 @@ fn sign_in_state(may_install: bool) -> SignIn {
 /// than any search has saved. Only ever the two tools this project actually requires, only
 /// through the official package id, and `--no-install` turns it off for anybody who would rather
 /// manage their own.
-fn install(package: &str, tool: &str) -> bool {
+pub fn install(package: &str, tool: &str) -> bool {
     if !cfg!(windows) {
         println!(
             "  [....]    {tool} is missing. Install it with your package manager and run this \

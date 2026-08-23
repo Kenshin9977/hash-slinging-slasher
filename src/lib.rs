@@ -32,6 +32,12 @@ pub mod recon;
 pub mod futility;
 pub mod readiness;
 pub mod startup;
+
+// Getting somebody who has never used a terminal from "I want to help" to a search actually
+// running. `startup` already decides what is worth doing; these two carry that decision the
+// last step, for a reader who stops at a command they would otherwise have to retype.
+pub mod offer;
+pub mod runner;
 pub mod fingerprint;
 
 // Reading the loader's memory to capture a snapshot. Only whoever owns the game needs this, and
