@@ -1,6 +1,16 @@
 # Would a GPU help?
 
-Short answer: **not yet, and not for the reason people expect.** The recommendation at the bottom
+Short answer, as of 2026-08-23: **yes, by about 11x -- and not for the reason people expect
+either.**
+
+The analysis below was written first, and every measurement in it still holds. What changed is
+that the experiment it recommended was carried out, and the answer came back different from the
+prediction, for a reason this document names correctly and then draws the wrong conclusion from.
+That is [What the experiment actually measured](#what-the-experiment-actually-measured), which is
+the section to read if you read only one. The rest is kept unedited: the reasoning is what made
+the experiment worth running, and it is worth seeing what it got right.
+
+The original short answer, kept: **not yet, and not for the reason people expect.** The recommendation at the bottom
 is a specific experiment rather than "add CUDA", because the measurements below say the hashing is
 not what this project is spending its time on.
 
@@ -120,6 +130,112 @@ collapsed to 1.11 × 10^6/s.
 
 ---
 
+## What the experiment actually measured
+
+**Measured** on a Ryzen 9 3900X (12 cores, 24 threads) and an RTX 3080, through the OpenCL adapter
+in `src/adapters/opencl/`, 2026-08-23. Reproduce with `cargo run --release --bin gpuinfo -- --bench`.
+
+| | forward hashes/s | wall clock for 342M candidates |
+|---|---|---|
+| 12 CPU cores | **1.76 × 10^8** | 1.94 s |
+| RTX 3080, transfers included | **2.07 × 10^9** | 0.17 s |
+
+**11.7×**, end to end, uploads counted.
+
+The CPU figure is worth pausing on: 1.76 × 10^8 forward hashes/s on a 3900X, against the
+1.81 × 10^8 measured above on a 7800X3D. Two machines, two implementations of the same sweep,
+within 3% of each other. That is the check which says the number above is measuring this engine
+and not an artefact of the bench.
+
+### Why the prediction was wrong
+
+The analysis above is right that the bottleneck is the probe and not the hash, and right about the
+numbers: the hash is about sixty cycles and probing 128 MB of filter is about three hundred and
+forty. Where it goes wrong is the step after that — the claim that moving this to a GPU "would
+accelerate only the hashing component while shifting random-access operations onto a bus that is
+worse for random access than a CPU's cache hierarchy."
+
+The bus is not what serves those accesses. The peeled set lives in device memory for the whole
+batch and is uploaded once, not per candidate; what a probe crosses is the device's own memory
+system. That system is worse than a CPU cache hierarchy at *latency* and much better at *having
+thousands of misses outstanding at once*, and a random probe that nothing else depends on is
+exactly the workload that trades the first for the second.
+
+The bench shows both halves of it. Over a small peeled set the CPU sweeps at 8.7 × 10^8/s and the
+device at 6.2 × 10^9/s — 7.1×, with both sides running out of cache. Grow the peeled set to twenty
+million entries, which is the size a real batch reaches, and the CPU falls to 1.76 × 10^8 while the
+device falls to 2.07 × 10^9. **The CPU loses a factor of five to exactly the cache miss the
+analysis predicted. The device loses a factor of three.** The gap widens with the thing that was
+supposed to close it.
+
+None of this makes the CPU-side recommendations wrong. Points 1 to 3 below are still the better
+value per hour of work, and a Python generator feeding candidates at 7.7 × 10^5/s is still idle
+99.99% of the time whatever runs behind it.
+
+### What was built
+
+`src/adapters/opencl/`, as an adapter behind the port in `src/ports/backend.rs`. The search asks
+for a sweep; what answers is a device when there is one and the same thread pool as before when
+there is not.
+
+- **OpenCL, not CUDA**, for the reason this document already gave: CUDA excludes half the people
+  helping, including the machine the original measurements came from. The kernel is OpenCL 1.2
+  with no extensions, no subgroup assumptions and no 64-bit atomics, which reaches GCN 1.0
+  onwards, every RDNA, Intel Gen7.5 onwards, Arc, and NVIDIA.
+- **No Cargo feature, and no dependency.** The recommendation below was for a feature flag, and
+  that turned out to be a weaker guarantee than the one available: the ICD loader is opened by
+  name at run time rather than linked, so one binary uses a GPU on a machine that has one and
+  never mentions it on a machine that does not. A feature flag would have meant two binaries and
+  a contributor picking the wrong one. A missing `libOpenCL.so.1` is not an error here; it is
+  Tuesday.
+- **Runtime kernel compilation**, so there is no device binary to ship per vendor per generation
+  and no toolchain for a contributor to install. This is the part that most widens who can help:
+  the CUDA original needed `nvcc` and the CUDA SDK before it could do anything at all.
+- **`cargo run --release --bin gpuinfo`** prints the device and then checks it against the CPU on
+  the same bytes — the fold, both bitmaps, the binary search, stems past the register window, and
+  the degenerate shapes a real pass produces at its edges. It is the command to run before
+  trusting a device, and the output to paste when it does not work.
+
+### What has not been checked, and by whom it can be
+
+**No AMD or Intel device has run this.** The author has an RTX 3080 and nothing else, which is
+precisely the constraint that made OpenCL the right choice and does nothing whatever to prove the
+choice worked. What stands in for hardware, in `.github/workflows/gpu.yml`:
+
+- **PoCL**, a conformant OpenCL implementation on a plain CPU runner, which catches what an NVIDIA
+  driver forgives.
+- **Oclgrind**, which interprets the kernel and bounds-checks every access. The kernel reads a
+  fixed thirty-two bytes from the start of every stem regardless of how long that stem is, which
+  is safe only because the host pads the buffer — exactly the kind of thing that is invisible on
+  real hardware right up until the one device whose allocator is arranged differently.
+- **`clang -x cl` targeting `amdgcn` and `spir64`**, which puts the kernel through the front ends
+  AMD and Intel actually ship, without a card and in about a second.
+
+Those three are not a GPU. **If you have an AMD or Intel device, running `gpuinfo` and pasting the
+output is worth more than all of them**, and it takes ten seconds.
+
+### The things most likely to be wrong on a device nobody here owns
+
+Named individually, so that a report can start from one of them rather than from "it does not
+work":
+
+- **Maximum allocation per buffer.** Commonly a quarter of the card's memory — the RTX 3080 here
+  reports 10 GiB total and refuses any single buffer over 2.5 GiB. A peeled batch is hundreds of
+  megabytes and will meet this limit on small cards. `Device::fits` checks it and hands the batch
+  back to the CPU rather than failing mid-upload, but the threshold has only ever been tested
+  against one vendor's idea of it.
+- **Work group limits.** `CL_KERNEL_WORK_GROUP_SIZE` can be far below the device maximum when a
+  kernel holds a lot in registers, and this one holds a whole stem. It is asked per kernel and
+  rounded down to the device's preferred multiple — 64 on GCN, 32 on NVIDIA, 8 or 16 or 32 on
+  Intel depending on how the kernel happened to compile.
+- **The unrolled fold.** `fold_window` is unrolled thirty-two ways with compile-time component
+  selection, so that a stem stays in registers across every beginning. A compiler that spills it
+  to private memory instead produces a kernel that is still correct and is several times slower.
+  A device that works but only reaches two or three times a CPU is probably this, and that is
+  worth a report too.
+
+---
+
 ## What to do instead, in order of expected value
 
 1. **Fix the thing that was actually the bottleneck.** `confirm_list` originally read candidates
@@ -180,6 +296,7 @@ been adopted:
 
 ---
 
-*Measurements on this project: Ryzen 7 7800X3D, 32 GB, Radeon RX 7900 XT, Windows 11, 2026-08-19.
+*Measurements before the experiment section: Ryzen 7 7800X3D, 32 GB, Radeon RX 7900 XT,
+Windows 11, 2026-08-19. Measurements in it: Ryzen 9 3900X, RTX 3080, Windows 11, 2026-08-23.
 Figures for `acts` are from reading its source; figures for `codehash` are its author's, on an
 RTX 3090, and are quoted rather than reproduced.*

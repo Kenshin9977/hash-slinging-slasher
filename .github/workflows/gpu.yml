@@ -1,0 +1,177 @@
+# Checks the GPU adapter on hardware nobody involved actually owns.
+#
+# The constraint this workflow exists to work around: the kernel has to run on AMD cards, Intel
+# iGPUs and NVIDIA cards, and no contributor here has all three. Buying the hardware is not an
+# option and waiting for a bug report is not a plan, so everything below is a way of finding a
+# portability bug without the device that would have shown it.
+#
+# There are three independent nets, in increasing order of what they catch and how slowly:
+#
+#   1. A second OpenCL implementation. PoCL is conformant, LLVM-based and runs on a plain CPU
+#      runner. Most of what a vendor's compiler will reject, PoCL rejects too -- and unlike a
+#      GPU driver it says why. This is the net that catches "NVIDIA let me get away with it".
+#
+#   2. A simulator that bounds-checks. Oclgrind interprets the kernel and validates every memory
+#      access and every barrier, which is how an out-of-bounds read that happens to land inside
+#      a real driver's allocation gets found. It is roughly a hundred times slower than a CPU,
+#      so it is given a deliberately small problem.
+#
+#   3. Offline compilation for the vendors' own targets. `clang -x cl` compiling for `amdgcn`
+#      does not run anything, but it does put the source through the same front end AMD ships,
+#      which is where a portability failure most often is.
+#
+# None of the three is a GPU. Together they are the difference between shipping a kernel that has
+# been reasoned about and one that has been checked.
+
+name: gpu
+
+on:
+  pull_request:
+    paths:
+      - "src/ports/**"
+      - "src/adapters/**"
+      - "src/search.rs"
+      - "src/bin/gpuinfo.rs"
+      - "tests/backend.rs"
+      - ".github/workflows/gpu.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: gpu-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint and unsafe code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      # Only the new files. The rest of this repository is not rustfmt-clean and reformatting it
+      # would bury the adapter under a thousand-line diff that says nothing -- which is a worse
+      # outcome than an inconsistent repository.
+      - name: format
+        run: |
+          rustfmt --edition 2021 --check \
+            src/ports/*.rs \
+            src/adapters/*.rs \
+            src/adapters/opencl/*.rs \
+            src/bin/gpuinfo.rs \
+            tests/backend.rs
+
+      # Not `-D warnings`: the same argument as above, and the modules that *are* new carry
+      # `#[deny(warnings, clippy::all, unsafe_op_in_unsafe_fn)]` in `lib.rs`, so a lint in the
+      # adapter is already a hard error here without making one in `submit.rs` into one too.
+      - run: cargo clippy --all-targets
+
+      # Miri cannot cross an FFI boundary -- it interprets Rust and there is no OpenCL driver to
+      # interpret -- so it is pointed at the half that is pure arithmetic. That half is the
+      # packing, and the packing is what decides what every device reads.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+      - run: cargo miri test --test backend packing_
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
+
+  pocl:
+    name: a second OpenCL implementation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # `pocl-opencl-icd` brings the loader with it, which is also what proves the runtime
+      # loading works: nothing in this repository links against OpenCL, so if the adapter finds
+      # PoCL here it found it the same way it will find a driver on a contributor's machine.
+      - name: install PoCL
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pocl-opencl-icd clinfo
+          clinfo --list
+
+      - run: cargo build --release --bin gpuinfo
+
+      # The selftest compares the device against the CPU on the same bytes. On PoCL the "device"
+      # is the runner's own cores, which makes this a check of the kernel's meaning rather than
+      # of any hardware -- exactly the part that is portable and exactly the part a vendor's
+      # compiler is entitled to disagree about.
+      - run: ./target/release/gpuinfo
+
+      - run: cargo test --release --test backend
+
+  oclgrind:
+    name: bounds and races in the kernel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: install Oclgrind
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y oclgrind
+
+      - run: cargo build --release --bin gpuinfo
+
+      # Every invalid access is reported and made fatal. A kernel that reads one byte past a
+      # buffer is usually invisible on real hardware, because the allocation it runs into is its
+      # own -- and is a wrong answer on the one device whose allocator is arranged differently.
+      #
+      # The stem window is the reason this check is here specifically: the kernel reads a fixed
+      # thirty-two bytes from the start of every stem regardless of how long that stem is, which
+      # is safe only because the host pads the buffer. This is what checks that it does.
+      - name: run the selftest under the simulator
+        run: |
+          oclgrind --data-races --check-api --uninitialized \
+                   --max-errors 1 \
+                   ./target/release/gpuinfo
+        env:
+          OCLGRIND_WORKLOAD_CHARACTERISATION: 0
+
+  offline:
+    name: the vendors' own compilers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclc-dev
+
+      # Compiling, not running. The point is the front end: AMD's OpenCL compiler and Intel's are
+      # both LLVM, and most of what they reject that NVIDIA accepts, they reject here too --
+      # without a card, without a driver, in about a second.
+      #
+      # `-Werror` matters more than the target does. A warning from one vendor's front end is
+      # frequently the other vendor's hard error.
+      - name: compile the kernel for each target
+        run: |
+          set -e
+          for target in amdgcn-amd-amdhsa spir64-unknown-unknown nvptx64-nvidia-cuda; do
+            echo "--- $target"
+            clang -x cl -cl-std=CL1.2 -Xclang -finclude-default-header \
+                  -target "$target" -Werror -fsyntax-only \
+                  src/adapters/opencl/kernels/meet.cl
+          done
+
+  windows:
+    name: builds where the contributors are
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      # No OpenCL on the runner, which is the case worth checking on Windows: the binary has to
+      # build, start, and quietly decide there is no device. A build that needed OpenCL.dll to
+      # link would pass every test here and fail on the first machine without a graphics driver.
+      - run: cargo build --release --bin gpuinfo
+      - run: cargo test --release --test backend
+      - run: ./target/release/gpuinfo.exe

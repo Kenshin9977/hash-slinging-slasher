@@ -11,7 +11,9 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::{expected_by_chance, feed, feed_raw, hash64, hash64_raw, peel, peel_raw, Filter, BASIS, ID_MASK};
+use crate::adapters::Preferred;
+use crate::ports::{Backend, PeelRequest, PeeledSet, StemBatch, SweepRequest};
+use crate::{expected_by_chance, feed, feed_raw, hash64, hash64_raw, Filter, BASIS, ID_MASK};
 
 /// How many entries a batch of peeled endings is allowed to reach.
 ///
@@ -22,6 +24,15 @@ const PEELED_BATCH: usize = 60_000_000;
 
 /// The beginning index that means there was no beginning at all.
 const BARE: usize = 0xFFFF_FFFF;
+
+/// How many stems are handed to the backend in one go.
+///
+/// Not a tuning knob so much as the granularity of two things that both matter: the progress
+/// report, which a pass needs because an hour of silence is indistinguishable from a hang, and
+/// the peak memory a device is asked for, which decides whether a small card can take the batch
+/// at all. Large enough that a launch is worth its own setup cost, small enough that a 4 GiB
+/// laptop GPU is never asked for a gigabyte of stems.
+const STEM_CHUNK: usize = 1 << 20;
 
 /// A search that peels its endings off the answers instead of appending them to the questions.
 ///
@@ -65,26 +76,29 @@ impl Peeled {
     /// ending on it. That is a separate question from whether a stem may stand with no beginning:
     /// one is about the end of a name and the other about its start, and a search that treats
     /// them as one loses every name that carries a beginning and no ending.
-    fn build(wanted: &HashMap<u64, usize>, endings: &[&String], no_ending: bool, fold: bool) -> Self {
-        let mut hashes: Vec<u64> =
-            Vec::with_capacity(wanted.len() * (endings.len() + usize::from(no_ending)) * 2);
+    fn build(
+        backend: &dyn Backend,
+        wanted: &HashMap<u64, usize>,
+        endings: &[&String],
+        no_ending: bool,
+        fold: bool,
+    ) -> Self {
+        // The id has had bit 63 cleared, so the name hashed to one of two values and both have
+        // to be peeled. Flattened here rather than in the backend, so that neither the CPU nor a
+        // device has to know why there are two of everything.
+        let spellings: Vec<u64> = wanted.keys().flat_map(|id| [*id, id | !ID_MASK]).collect();
 
-        for id in wanted.keys() {
-            // The id has had bit 63 cleared, so the name hashed to one of two values.
-            for spelling in [*id, id | !ID_MASK] {
-                if no_ending {
-                    hashes.push(spelling);
-                }
+        // The fold is applied once, here, and the peel that follows works on folded bytes. That
+        // is the same fold `peel` and `peel_raw` would have applied per byte, hoisted out of a
+        // loop that runs sixty million times.
+        let text: Vec<&str> = endings.iter().map(|ending| ending.as_str()).collect();
+        let packed = StemBatch::pack(&text, fold);
 
-                for ending in endings {
-                    hashes.push(if fold {
-                        peel(spelling, ending.as_bytes())
-                    } else {
-                        peel_raw(spelling, ending.as_bytes())
-                    });
-                }
-            }
-        }
+        let request = PeelRequest { spellings: &spellings, endings: &packed, no_ending };
+
+        let mut hashes = backend
+            .peel(&request)
+            .expect("the CPU stands behind every backend and never declines");
 
         hashes.sort_unstable();
         hashes.dedup();
@@ -94,10 +108,13 @@ impl Peeled {
         Self { hashes, filter }
     }
 
-    #[inline(always)]
-    fn holds(&self, hash: u64) -> bool {
-        self.filter.may_hold(hash) && self.hashes.binary_search(&hash).is_ok()
+    /// The set as a backend has to see it: a sorted list and the bitmaps over it.
+    fn as_port(&self) -> PeeledSet<'_> {
+        let (coarse, fine, coarse_bits, fine_bits) = self.filter.parts();
+
+        PeeledSet { hashes: &self.hashes, coarse, fine, coarse_bits, fine_bits }
     }
+
 }
 
 impl<'a> Meet<'a> {
@@ -193,6 +210,18 @@ impl<'a> Meet<'a> {
             wanted.len()
         );
 
+        // One device for the whole run, not one per batch: opening a context and building the
+        // kernel costs about a second, and a pass has dozens of batches.
+        let (backend, notice) = Preferred::open();
+
+        if !notice.is_empty() {
+            println!("{notice}");
+        }
+
+        // The beginnings, as the hash states they leave behind. Computed once for the pass, since
+        // every stem in every batch is folded onto all of them.
+        let states: Vec<u64> = self.openings.iter().map(|(_, state)| *state).collect();
+
         let mut collected: Vec<(u64, String)> = Vec::new();
         let started = Instant::now();
         let forward = AtomicU64::new(0);
@@ -210,7 +239,7 @@ impl<'a> Meet<'a> {
 
             // The bare stem is a candidate in its own right, and only needs asking once.
             // The ending-less candidate is asked once, on the first batch.
-            let peeled = Peeled::build(wanted, &slice, number == 0, self.fold);
+            let peeled = Peeled::build(&backend, wanted, &slice, number == 0, self.fold);
 
             let done = AtomicUsize::new(0);
             let finished = AtomicBool::new(false);
@@ -244,23 +273,34 @@ impl<'a> Meet<'a> {
                     }
                 });
 
-                let size = total.div_ceil(threads).max(1);
-                let mut workers = Vec::new();
+                // A chunk at a time rather than all the stems at once, for two reasons that
+                // have nothing to do with each other: it is what lets the reporter above say
+                // anything during a batch, and it bounds what a device is asked to hold. The
+                // work inside a chunk is divided by the backend, which on a GPU means one
+                // launch and on the CPU means the same thread pool this always used.
+                for (index, piece) in stems.chunks(STEM_CHUNK).enumerate() {
+                    let packed = StemBatch::pack(piece, self.fold);
 
-                for (index, piece) in stems.chunks(size).enumerate() {
-                    let this = &*self;
-                    let peeled = &peeled;
-                    let done = &done;
-                    let forward = &forward;
-                    let base = index * size;
+                    let request = SweepRequest {
+                        stems: &packed,
+                        openings: &states,
+                        bare: self.bare,
+                        peeled: peeled.as_port(),
+                    };
 
-                    workers.push(
-                        scope.spawn(move || this.sweep(piece, base, peeled, done, forward)),
-                    );
-                }
+                    forward.fetch_add(request.forward(), Ordering::Relaxed);
 
-                for worker in workers {
-                    reached.extend(worker.join().expect("a worker"));
+                    let hits = backend
+                        .sweep(&request)
+                        .expect("the CPU stands behind every backend and never declines");
+
+                    // A hit carries the stem's index within its chunk. The chunk's own offset is
+                    // added here so that what comes out is an index into `stems`, which is what
+                    // `mark` means everywhere else and what `name_them` will look up.
+                    let base = (index * STEM_CHUNK) as u64;
+                    reached.extend(hits.into_iter().map(|hit| hit + (base << 32)));
+
+                    done.fetch_add(piece.len(), Ordering::Relaxed);
                 }
 
                 finished.store(true, Ordering::Relaxed);
@@ -300,59 +340,6 @@ impl<'a> Meet<'a> {
         } else {
             feed_raw(hash, text)
         }
-    }
-
-    /// One worker's share of the stems, reporting the index of every stem-and-beginning that
-    /// landed in the peeled set. The index carries both which stem and which beginning.
-    fn sweep<S: AsRef<str>>(
-        &self,
-        chunk: &[S],
-        base: usize,
-        peeled: &Peeled,
-        done: &AtomicUsize,
-        forward: &AtomicU64,
-    ) -> Vec<u64> {
-        let mut reached: Vec<u64> = Vec::new();
-        let mut counted = 0_u64;
-        let mut since = 0_usize;
-
-        for (offset, stem) in chunk.iter().enumerate() {
-            let piece = stem.as_ref().as_bytes();
-
-            if self.bare {
-                counted += 1;
-                if peeled.holds(self.feed(BASIS, piece)) {
-                    reached.push(Self::mark(base + offset, BARE));
-                }
-            }
-
-            for (index, (_, opening)) in self.openings.iter().enumerate() {
-                counted += 1;
-                if peeled.holds(self.feed(*opening, piece)) {
-                    reached.push(Self::mark(base + offset, index));
-                }
-            }
-
-            since += 1;
-            if since == BATCH {
-                done.fetch_add(since, Ordering::Relaxed);
-                forward.fetch_add(counted, Ordering::Relaxed);
-                since = 0;
-                counted = 0;
-            }
-        }
-
-        done.fetch_add(since, Ordering::Relaxed);
-        forward.fetch_add(counted, Ordering::Relaxed);
-
-        reached
-    }
-
-    /// A stem offset and a beginning index, packed so a worker can report both as one number.
-    /// Half the word each, which is more of both than any list here will ever hold.
-    #[inline(always)]
-    fn mark(offset: usize, opening: usize) -> u64 {
-        ((offset as u64) << 32) | (opening as u64 & 0xFFFF_FFFF)
     }
 
     /// Turns what the sweep reached into names, by trying the batch's endings forward.
@@ -685,7 +672,7 @@ pub fn run_best<S: AsRef<str> + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::id_of;
+    use crate::{id_of, peel, peel_raw};
 
     /// The whole of the fast search rests on the hash running backwards exactly, so this is the
     /// test that matters most: peeling a string off a hash has to give back what was there

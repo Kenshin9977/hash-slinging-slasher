@@ -24,6 +24,19 @@ pub mod paths;
 pub mod snapshot;
 pub mod search;
 
+// The sweep, said as a question (`ports`) and answered in more than one place (`adapters`).
+// Kept next to `search` because that is the only thing that asks it.
+//
+// Both are held to a stricter standard than the rest of this repository, which predates the rule
+// and would not pass it. New code has no such excuse, and one of these two modules is full of
+// raw pointers handed to a graphics driver -- the one place here where a lint being ignored is
+// not a matter of taste.
+#[deny(warnings, clippy::all)]
+pub mod ports;
+
+#[deny(warnings, clippy::all, unsafe_op_in_unsafe_fn)]
+pub mod adapters;
+
 // Everything that has to happen before a search, and the gate that makes it happen. Kept
 // together because they are one idea: a night is wasted by a stale clone far more often than by
 // a bad method, so freshness is enforced by a program rather than asked for in prose.
@@ -532,6 +545,16 @@ impl Filter {
         let fine = (id >> self.coarse_bits) & ((1 << self.fine_bits) - 1);
 
         (coarse as usize, fine as usize)
+    }
+
+    /// The bitmaps and their widths, for a backend that has to do this test somewhere else.
+    ///
+    /// Exposed rather than rebuilt, so that a device and these threads answer with the same bits
+    /// at the same sizes. A second implementation that sized its own filter would agree with
+    /// this one nearly always, and a search that is nearly right is the failure this project
+    /// cannot see happening.
+    pub fn parts(&self) -> (&[u64], &[u64], u32, u32) {
+        (&self.coarse, &self.fine, self.coarse_bits, self.fine_bits)
     }
 
     #[inline(always)]

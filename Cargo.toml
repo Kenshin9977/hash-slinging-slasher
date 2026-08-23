@@ -41,6 +41,13 @@ path = "src/bin/start.rs"
 
 # Confirms a plain list of candidate names. The piece that makes inventing a method cheap: a
 # generator in any language prints candidates, this does the careful half.
+# What the machine's GPU is, and whether it agrees with the CPU on the same bytes. The check a
+# contributor runs before trusting a device, and the output they paste when it does not work --
+# the kernel cannot be tested here on the hardware most people helping actually own.
+[[bin]]
+name = "gpuinfo"
+path = "src/bin/gpuinfo.rs"
+
 [[bin]]
 name = "confirm_list"
 path = "src/bin/confirm_list.rs"
