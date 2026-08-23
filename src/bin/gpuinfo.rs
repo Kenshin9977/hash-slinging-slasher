@@ -102,6 +102,21 @@ fn probe() -> i32 {
     }
 }
 
+/// How much work each check does.
+///
+/// A simulator that bounds-checks every memory access runs roughly a hundred times slower than
+/// the processor under it, so the sizes that make a real device sweat make Oclgrind take an hour.
+/// `--small` is what continuous integration passes: the same checks, the same code paths, few
+/// enough candidates to finish. It is not a weaker check -- a wrong index is wrong at forty
+/// spellings exactly as it is at ten thousand -- it is a shorter one.
+fn scale() -> usize {
+    if std::env::args().any(|argument| argument == "--small") {
+        1
+    } else {
+        100
+    }
+}
+
 fn check(what: &str, outcome: Result<String, String>) -> u32 {
     match outcome {
         Ok(note) => {
@@ -176,8 +191,13 @@ fn known_vectors(device: &opencl::Device) -> Result<String, String> {
 /// and passes on a device that returns an empty answer for every question -- which is exactly
 /// what a broken driver does.
 fn sweep_agrees(device: &opencl::Device) -> Result<String, String> {
-    let openings: Vec<String> = (0..170).map(|n| format!("weapons/tier{n}/")).collect();
-    let stems: Vec<String> = (0..20_000).map(|n| format!("part_{n:05}_body")).collect();
+    let scale = scale();
+    let openings: Vec<String> = (0..(2 * scale).min(170).max(6))
+        .map(|n| format!("weapons/tier{n}/"))
+        .collect();
+    let stems: Vec<String> = (0..200 * scale)
+        .map(|n| format!("part_{n:05}_body"))
+        .collect();
 
     // Every twenty-fifth candidate is planted, so both sides have several hundred hits to get
     // wrong, and their indices are spread across the whole batch rather than bunched at the front.
@@ -237,10 +257,13 @@ fn sweep_agrees(device: &opencl::Device) -> Result<String, String> {
 
 /// The backward peel, compared element for element in the layout both sides write.
 fn peel_agrees(device: &opencl::Device) -> Result<String, String> {
-    let endings: Vec<String> = (0..400).map(|n| format!("_variant{n:03}.xmodel")).collect();
+    let scale = scale();
+    let endings: Vec<String> = (0..(4 * scale).min(400))
+        .map(|n| format!("_variant{n:03}.xmodel"))
+        .collect();
     let packed = StemBatch::pack(&endings, true);
 
-    let spellings: Vec<u64> = (0..5_000_u64)
+    let spellings: Vec<u64> = (0..50 * scale as u64)
         .flat_map(|n| {
             let id = hash64(&format!("some/asset/{n}")) & ID_MASK;
             [id, id | !ID_MASK]

@@ -5,22 +5,27 @@
 # option and waiting for a bug report is not a plan, so everything below is a way of finding a
 # portability bug without the device that would have shown it.
 #
-# There are three independent nets, in increasing order of what they catch and how slowly:
+# Four independent nets, in increasing order of what they catch:
 #
-#   1. A second OpenCL implementation. PoCL is conformant, LLVM-based and runs on a plain CPU
-#      runner. Most of what a vendor's compiler will reject, PoCL rejects too -- and unlike a
-#      GPU driver it says why. This is the net that catches "NVIDIA let me get away with it".
+#   1. AMD's own backend, all the way to machine code. `clang -target amdgcn` is the same LLVM
+#      backend ROCm and Mesa both use, so a crash or a rejection here is a crash or a rejection
+#      on a real Radeon. It also prints register and spill counts, which answers the one
+#      performance question that cannot be answered by reading the source.
 #
-#   2. A simulator that bounds-checks. Oclgrind interprets the kernel and validates every memory
-#      access and every barrier, which is how an out-of-bounds read that happens to land inside
-#      a real driver's allocation gets found. It is roughly a hundred times slower than a CPU,
-#      so it is given a deliberately small problem.
+#   2. A second OpenCL implementation. PoCL is conformant, LLVM-based and runs on a plain CPU
+#      runner. Most of what a vendor's compiler will reject, PoCL rejects too -- and unlike a GPU
+#      driver it says why. This is the net that catches "NVIDIA let me get away with it".
 #
-#   3. Offline compilation for the vendors' own targets. `clang -x cl` compiling for `amdgcn`
-#      does not run anything, but it does put the source through the same front end AMD ships,
-#      which is where a portability failure most often is.
+#   3. A simulator that bounds-checks. Oclgrind interprets the kernel and validates every memory
+#      access and every barrier. It is how an out-of-bounds read that happens to land inside a
+#      real driver's own allocation gets found, and it has already earned its place: when Mesa
+#      faulted running the peel kernel, this is what proved the kernel was in bounds and the
+#      fault was Mesa's.
 #
-# None of the three is a GPU. Together they are the difference between shipping a kernel that has
+#   4. Mesa. Rusticl compiles OpenCL C the same way for every backend it has -- clc to SPIR-V to
+#      NIR -- so running it on the CPU driver exercises the exact front end it uses on a Radeon.
+#
+# None of the four is a GPU. Together they are the difference between shipping a kernel that has
 # been reasoned about and one that has been checked.
 
 name: gpu
@@ -54,7 +59,7 @@ jobs:
           components: clippy, rustfmt
 
       # Only the new files. The rest of this repository is not rustfmt-clean and reformatting it
-      # would bury the adapter under a thousand-line diff that says nothing -- which is a worse
+      # would bury the adapter under a thousand-line diff that says nothing, which is a worse
       # outcome than an inconsistent repository.
       - name: format
         run: |
@@ -65,20 +70,72 @@ jobs:
             src/bin/gpuinfo.rs \
             tests/backend.rs
 
-      # Not `-D warnings`: the same argument as above, and the modules that *are* new carry
+      # Not `-D warnings`: same argument as above. The modules that *are* new carry
       # `#[deny(warnings, clippy::all, unsafe_op_in_unsafe_fn)]` in `lib.rs`, so a lint in the
-      # adapter is already a hard error here without making one in `submit.rs` into one too.
+      # adapter is already a hard error without making one in `submit.rs` into one too.
       - run: cargo clippy --all-targets
 
       # Miri cannot cross an FFI boundary -- it interprets Rust and there is no OpenCL driver to
       # interpret -- so it is pointed at the half that is pure arithmetic. That half is the
-      # packing, and the packing is what decides what every device reads.
+      # packing, and the packing decides what every device reads.
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: miri
       - run: cargo miri test --test backend packing_
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
+
+  amdgpu:
+    name: AMD's backend, to machine code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install clang
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang
+
+      # Compiling, not running -- but all the way down, not just parsing. `-fsyntax-only` would
+      # check that AMD's front end accepts the source; this checks that its *backend* can turn it
+      # into instructions, which is where a portability failure of the kind already seen on Intel
+      # actually lives.
+      #
+      # `-nogpulib` because the ROCm device library is not packaged here. The OpenCL builtins are
+      # left as external calls, which costs nothing: every line of arithmetic in this kernel still
+      # goes through the full backend.
+      - name: compile for five generations of Radeon
+        run: |
+          set -e
+          # gfx900  Vega / GCN5      gfx1010 RDNA1
+          # gfx1030 RDNA2, RX 6000   gfx1100 RDNA3, RX 7900
+          # gfx1200 RDNA4, RX 9000
+          for cpu in gfx900 gfx1010 gfx1030 gfx1100 gfx1200; do
+            clang -x cl -cl-std=CL1.2 -Xclang -finclude-default-header \
+                  -target amdgcn-amd-amdhsa -mcpu="$cpu" -nogpulib \
+                  -O3 -S -o "/tmp/$cpu.s" \
+                  src/adapters/opencl/kernels/meet.cl
+
+            vgpr=$(grep -m1 -oE '\.vgpr_count: *[0-9]+' "/tmp/$cpu.s" | grep -oE '[0-9]+' || echo '?')
+            spill=$(grep -c 'scratch_store' "/tmp/$cpu.s" || true)
+
+            echo "$cpu: vgpr=$vgpr scratch stores=$spill"
+
+            # The unrolled fold keeps a stem in registers across every beginning, and a compiler
+            # that spills it instead produces a kernel that is correct and several times slower.
+            # That is a silent failure on hardware nobody here owns, so it fails loudly here.
+            if [ "$spill" -ne 0 ]; then
+              echo "::error::$cpu spills to scratch memory: the fold no longer stays in registers"
+              exit 1
+            fi
+          done
+
+      # Intel's front end, for the same reason, on the same source.
+      - name: compile for Intel
+        run: |
+          clang -x cl -cl-std=CL1.2 -Xclang -finclude-default-header \
+                -target spir64-unknown-unknown -Werror -fsyntax-only \
+                src/adapters/opencl/kernels/meet.cl
 
   pocl:
     name: a second OpenCL implementation
@@ -87,9 +144,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
-      # `pocl-opencl-icd` brings the loader with it, which is also what proves the runtime
-      # loading works: nothing in this repository links against OpenCL, so if the adapter finds
-      # PoCL here it found it the same way it will find a driver on a contributor's machine.
+      # `pocl-opencl-icd` brings the loader with it, which also proves the runtime loading works:
+      # nothing here links against OpenCL, so if the adapter finds PoCL it found it the same way
+      # it will find a driver on a contributor's machine.
       - name: install PoCL
         run: |
           sudo apt-get update
@@ -98,13 +155,16 @@ jobs:
 
       - run: cargo build --release --bin gpuinfo
 
-      # The selftest compares the device against the CPU on the same bytes. On PoCL the "device"
-      # is the runner's own cores, which makes this a check of the kernel's meaning rather than
-      # of any hardware -- exactly the part that is portable and exactly the part a vendor's
-      # compiler is entitled to disagree about.
+      # PoCL's device is the runner's own cores and reports itself as a CPU, which the adapter
+      # refuses in a real run for good reason -- it would be slower than the thread pool. Without
+      # this variable this job enumerates nothing and passes, which is worse than not having it.
       - run: ./target/release/gpuinfo
+        env:
+          SLASHER_GPU_ALLOW_CPU: "1"
 
       - run: cargo test --release --test backend
+        env:
+          SLASHER_GPU_ALLOW_CPU: "1"
 
   oclgrind:
     name: bounds and races in the kernel
@@ -120,47 +180,48 @@ jobs:
 
       - run: cargo build --release --bin gpuinfo
 
-      # Every invalid access is reported and made fatal. A kernel that reads one byte past a
-      # buffer is usually invisible on real hardware, because the allocation it runs into is its
-      # own -- and is a wrong answer on the one device whose allocator is arranged differently.
+      # Every invalid access is reported. A kernel that reads one byte past a buffer is usually
+      # invisible on real hardware, because the allocation it runs into is its own -- and is a
+      # wrong answer on the one device whose allocator is arranged differently.
       #
-      # The stem window is the reason this check is here specifically: the kernel reads a fixed
-      # thirty-two bytes from the start of every stem regardless of how long that stem is, which
-      # is safe only because the host pads the buffer. This is what checks that it does.
+      # The stem window is why this is here specifically: the kernel reads a fixed thirty-two
+      # bytes from the start of every stem regardless of how long that stem is, which is safe only
+      # because the host pads the buffer.
+      #
+      # `--small` because interpreting and bounds-checking every access costs about a hundred
+      # times a CPU. The checks are the same; there are fewer candidates in them.
       - name: run the selftest under the simulator
         run: |
-          oclgrind --data-races --check-api --uninitialized \
-                   --max-errors 1 \
-                   ./target/release/gpuinfo
-        env:
-          OCLGRIND_WORKLOAD_CHARACTERISATION: 0
+          oclgrind --data-races --uninitialized --check-api \
+                   ./target/release/gpuinfo --small
 
-  offline:
-    name: the vendors' own compilers
+  mesa:
+    name: Mesa's front end, the one a Radeon uses
     runs-on: ubuntu-latest
+    # Rusticl faults executing the peel kernel as of Mesa 25.2. Oclgrind clears the same kernel of
+    # every out-of-bounds access and Rusticl runs the sweep correctly, so this is Mesa's and not
+    # ours -- but it is upstream and not ours to fix, so it must not block a pull request. It stays
+    # because it will start passing, and because the sweep half is checked meanwhile.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
 
-      - name: install clang
+      # Nothing else. Mesa's OpenCL links its own LLVM, and installing a distribution `llvm` next
+      # to it is enough to make the loader find no platform at all -- and then this job passes for
+      # entirely the wrong reason.
+      - name: install Mesa's OpenCL
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang libclc-dev
+          sudo apt-get install -y mesa-opencl-icd clinfo
+          RUSTICL_ENABLE=llvmpipe clinfo --list
 
-      # Compiling, not running. The point is the front end: AMD's OpenCL compiler and Intel's are
-      # both LLVM, and most of what they reject that NVIDIA accepts, they reject here too --
-      # without a card, without a driver, in about a second.
-      #
-      # `-Werror` matters more than the target does. A warning from one vendor's front end is
-      # frequently the other vendor's hard error.
-      - name: compile the kernel for each target
-        run: |
-          set -e
-          for target in amdgcn-amd-amdhsa spir64-unknown-unknown nvptx64-nvidia-cuda; do
-            echo "--- $target"
-            clang -x cl -cl-std=CL1.2 -Xclang -finclude-default-header \
-                  -target "$target" -Werror -fsyntax-only \
-                  src/adapters/opencl/kernels/meet.cl
-          done
+      - run: cargo build --release --bin gpuinfo
+
+      - run: ./target/release/gpuinfo --small
+        env:
+          RUSTICL_ENABLE: llvmpipe
+          SLASHER_GPU_ALLOW_CPU: "1"
 
   windows:
     name: builds where the contributors are

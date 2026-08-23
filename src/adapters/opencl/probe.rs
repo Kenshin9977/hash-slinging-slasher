@@ -80,8 +80,13 @@ impl Candidate {
     }
 }
 
+/// Whether CPU OpenCL devices count as usable. See the comment in [`candidates`].
+pub fn allow_cpu() -> bool {
+    std::env::var_os(super::ALLOW_CPU).is_some()
+}
+
 /// Every device the loader can see, best first.
-pub fn candidates(api: &Api) -> Result<Vec<Candidate>, String> {
+pub fn candidates(api: &Api, allow_cpu: bool) -> Result<Vec<Candidate>, String> {
     let mut count = 0_u32;
 
     let status = unsafe { (api.get_platform_ids)(0, ptr::null_mut(), &mut count) };
@@ -115,9 +120,22 @@ pub fn candidates(api: &Api) -> Result<Vec<Candidate>, String> {
 
     for platform in platforms {
         // Accelerators are asked for alongside GPUs because that is what some FPGA and Xe Max
-        // stacks call themselves. CPU devices are not: a CPU device would be slower than the
-        // thread pool this is meant to replace, while looking like a success.
-        let wanted = CL_DEVICE_TYPE_GPU | CL_DEVICE_TYPE_ACCELERATOR;
+        // stacks call themselves. CPU devices are not, in a real run: a CPU device is slower than
+        // the thread pool this exists to replace, while looking like a success.
+        //
+        // They are asked for when something has set `SLASHER_GPU_ALLOW_CPU`, and only continuous
+        // integration ever should. It is the only way to *run* this kernel where there is no
+        // graphics hardware, and running it on PoCL or on Mesa's Rusticl is worth a great deal:
+        // both are conformant implementations that are not the one it was written against, and
+        // Rusticl compiles OpenCL C through the very same clc-to-SPIR-V-to-NIR path it uses on a
+        // Radeon. Without this the CI job that claims to check portability enumerates nothing and
+        // passes, which is worse than not having it.
+        let mut wanted = CL_DEVICE_TYPE_GPU | CL_DEVICE_TYPE_ACCELERATOR;
+
+        if allow_cpu {
+            wanted |= CL_DEVICE_TYPE_CPU;
+        }
+
         let mut device_count = 0_u32;
 
         let status = unsafe {
@@ -256,7 +274,7 @@ pub fn report() -> String {
         }
     };
 
-    match candidates(&api) {
+    match candidates(&api, allow_cpu()) {
         Ok(found) => {
             out.push_str(&format!(
                 "{} usable device(s), best first:\n\n",

@@ -97,7 +97,7 @@ impl Device {
             Err(_) => return Ok(None),
         };
 
-        let found = match candidates(&api) {
+        let found = match candidates(&api, super::probe::allow_cpu()) {
             Ok(found) => found,
             Err(_) => return Ok(None),
         };

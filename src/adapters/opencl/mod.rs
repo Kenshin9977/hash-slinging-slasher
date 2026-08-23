@@ -37,3 +37,12 @@ pub const SOURCE: &str = include_str!("kernels/meet.cl");
 /// rebuilding anything, and a contributor with two GPUs needs a way to say which one. Both are
 /// the first thing asked whenever a tool like this appears, so both exist from the start.
 pub const OVERRIDE: &str = "SLASHER_GPU";
+
+/// Count OpenCL devices that are not graphics hardware as usable.
+///
+/// For continuous integration and for nothing else. A CPU OpenCL device is slower than the thread
+/// pool the adapter exists to replace, so a run that picked one would be a regression wearing the
+/// costume of an improvement. What it buys is the ability to *run* the kernel on a machine with no
+/// GPU -- against PoCL, and against Mesa's Rusticl, which compiles OpenCL C through the same path
+/// it uses on a Radeon. That is the closest anyone here can currently get to AMD.
+pub const ALLOW_CPU: &str = "SLASHER_GPU_ALLOW_CPU";

@@ -263,6 +263,69 @@ fail over it.
 None of this would have been found by reading the kernel, by any of the three CI nets, or on an
 NVIDIA card. It took ten minutes on one real device from another vendor.
 
+### Getting as close to a Radeon as is possible without one
+
+Four things were tried. Two are worth keeping, and they are in `.github/workflows/gpu.yml`.
+
+**AMD's own backend, all the way to machine code.** `clang -x cl -target amdgcn-amd-amdhsa
+-mcpu=gfx1100` is the same LLVM backend ROCm and Mesa both use, so what it accepts a Radeon
+accepts. It needs no AMD hardware and no ROCm install, and it takes about a second. Run against
+five generations, 2026-08-23:
+
+| target | | instructions | VGPRs | SGPRs | spilled |
+|---|---|---|---|---|---|
+| gfx900 | Vega, GCN5 | 1034 | 91 | 106 | **0** |
+| gfx1010 | RDNA1 | 1001 | 89 | 90 | **0** |
+| gfx1030 | RDNA2, RX 6000 | 1000 | 80 | 90 | **0** |
+| gfx1100 | RDNA3, RX 7900 | 1136 | 80 | 90 | **0** |
+| gfx1200 | RDNA4, RX 9000 | 1109 | 80 | 87 | **0** |
+
+Nothing spills on any of them, which is the one performance question that could not be answered by
+reading the source. `fold_window` is unrolled thirty-two ways so that a stem stays in registers
+across every beginning, and a compiler that spilled it instead would produce a kernel that is
+correct and several times slower — a silent failure on hardware nobody here owns. The CI job fails
+if a scratch store ever appears.
+
+**Oclgrind**, which interprets the kernel and validates every memory access. It earned its place
+the same afternoon: see below.
+
+The two that were tried and are not enough:
+
+- **Radeon GPU Analyzer** would be the obvious tool — it is AMD's own offline compiler and static
+  analyser, and it targets any GPU independent of what is installed. Its Vulkan modes ship with a
+  driver bundled for exactly this. [Its OpenCL backend still wants AMD hardware
+  present](https://github.com/GPUOpen-Tools/radeon_gpu_analyzer), so for this it does not help.
+- **gem5** has a full-system AMD GPU model at the gfx9 ISA level, and it does functionally
+  simulate a Radeon on a machine without one. It is a research simulator with a boot and a ROCm
+  stack to configure, and it is orders of magnitude slower again than Oclgrind. If a bug is ever
+  narrowed to something only real execution would show, it is the last resort that exists. It is
+  not a thing to put in CI.
+
+### What Mesa found, and what Oclgrind said about it
+
+**Rusticl on llvmpipe** is the closest thing to a Radeon that actually *runs*: Mesa compiles
+OpenCL C the same way for every backend it has, clc to SPIR-V to NIR, so the CPU driver exercises
+the exact front end `radeonsi` uses on a real card.
+
+It runs the forward sweep correctly — 3.42M candidates, 850 hits, identical to the CPU — and then
+faults executing the peel kernel. Narrowed by bisection: it faults at ten spellings by two endings
+as readily as at ten thousand by four hundred, so it is not a size; it survives if the inner loop
+is removed; it faults whether the multiply is a multiply or a xor. Most tellingly, writing the
+same loop two ways that compile to the same trip count gives a fault one way and not the other.
+
+Then Oclgrind ran the same kernel with every memory access bounds-checked, every barrier validated
+and data-race detection on, and reported **nothing**, with the peel's output identical to the
+CPU's. So the kernel is in bounds and correct, and the fault is Mesa's.
+
+That is exactly the split that could not have been settled by argument, and it is the reason
+Oclgrind is in CI rather than being a thing that was considered. The Mesa job stays too, marked
+non-blocking: it checks the sweep half meanwhile, and it will start passing when Mesa does.
+
+**What none of this establishes is that the kernel produces right answers on a Radeon.** It
+compiles for five generations without spilling, it is free of the memory errors a simulator can
+see, and two other vendors agree with the CPU byte for byte. A card would still be worth more than
+all of it.
+
 ### What has not been checked, and by whom it can be
 
 **No AMD device has run this**, and that is a gap in the evidence rather than in the support. There

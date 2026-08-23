@@ -44,6 +44,7 @@ pub const CL_OUT_OF_HOST_MEMORY: cl_int = -6;
 pub const CL_BUILD_PROGRAM_FAILURE: cl_int = -11;
 pub const CL_INVALID_BUFFER_SIZE: cl_int = -61;
 
+pub const CL_DEVICE_TYPE_CPU: cl_device_type = 1 << 1;
 pub const CL_DEVICE_TYPE_GPU: cl_device_type = 1 << 2;
 pub const CL_DEVICE_TYPE_ACCELERATOR: cl_device_type = 1 << 3;
 pub const CL_DEVICE_TYPE_ALL: cl_device_type = 0xFFFF_FFFF;
