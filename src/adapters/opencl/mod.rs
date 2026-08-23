@@ -62,3 +62,15 @@ pub const NO_TABLE: &str = "SLASHER_GPU_NO_TABLE";
 /// small number is how the seams between chunks get exercised, and the seams are where the
 /// un-peeled row and the row offsets are easy to put in the wrong place.
 pub const PEEL_ROWS: &str = "SLASHER_GPU_PEEL_ROWS";
+
+/// Pretend the device has this many mebibytes, however much it really has.
+///
+/// Not a simulation of a small card -- a simulation of the only two things about one that this
+/// adapter can see. Every decision it makes about size comes from `CL_DEVICE_MAX_MEM_ALLOC_SIZE`
+/// and `CL_DEVICE_GLOBAL_MEM_SIZE`, so capping those makes a large card take a small card's paths
+/// exactly, on real silicon and at full speed.
+///
+/// What it does not reproduce is a driver's behaviour when an allocation genuinely fails. That is
+/// deliberate and it is the point: this adapter is built never to reach that, by asking first, and
+/// so what needs testing is the asking and the falling back rather than the failing.
+pub const PRETEND_MIB: &str = "SLASHER_GPU_PRETEND_MIB";

@@ -325,27 +325,61 @@ impl Device {
     /// 5 GiB buffer; `global_mem` is the total, and taking all of it takes the desktop down with
     /// it. Failing here costs nothing. Failing halfway through an allocation leaves a partly
     /// uploaded batch and a driver in a state worth avoiding.
+    /// The two limits every size decision is made against.
+    ///
+    /// Read through here rather than off `info` directly, so that `SLASHER_GPU_PRETEND_MIB` makes
+    /// a large card behave like a small one everywhere at once. A cap applied in some places and
+    /// not others would be worse than none: it would exercise a mixture of the two that no real
+    /// device ever presents.
+    fn limits(&self) -> (u64, u64) {
+        let real = (self.info.max_alloc, self.info.global_mem);
+
+        let Some(mib) = std::env::var(super::PRETEND_MIB)
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .filter(|mib| *mib > 0)
+        else {
+            return real;
+        };
+
+        let pretend = mib * (1 << 20);
+
+        (
+            if real.0 == 0 {
+                pretend
+            } else {
+                real.0.min(pretend)
+            },
+            if real.1 == 0 {
+                pretend
+            } else {
+                real.1.min(pretend)
+            },
+        )
+    }
+
     fn fits(&self, buffers: &[(&str, usize)]) -> Result<(), Unsupported> {
+        let (max_alloc, global_mem) = self.limits();
         let mut total = 0_u64;
 
         for (what, bytes) in buffers {
             let bytes = *bytes as u64;
             total += bytes;
 
-            if self.info.max_alloc > 0 && bytes > self.info.max_alloc {
+            if max_alloc > 0 && bytes > max_alloc {
                 return Err(Unsupported::new(format!(
                     "{what} needs {:.2} GiB in one buffer and {} caps a single allocation at \
                      {:.2} GiB",
                     bytes as f64 / (1u64 << 30) as f64,
                     self.info.name,
-                    self.info.max_alloc as f64 / (1u64 << 30) as f64,
+                    max_alloc as f64 / (1u64 << 30) as f64,
                 )));
             }
         }
 
-        let room = (self.info.global_mem as f64 * MEMORY_HEADROOM) as u64;
+        let room = (global_mem as f64 * MEMORY_HEADROOM) as u64;
 
-        if self.info.global_mem > 0 && total > room {
+        if global_mem > 0 && total > room {
             return Err(Unsupported::new(format!(
                 "this batch needs {:.2} GiB and {} has {:.2} GiB usable",
                 total as f64 / (1u64 << 30) as f64,
@@ -559,7 +593,16 @@ impl Backend for Device {
                 ])
                 .is_ok();
 
-        let mut room = HITS;
+        // Sized from what this device can actually hold, not from a constant.
+        //
+        // `HITS` is a starting guess for a card with room, and a small card cannot allocate it --
+        // so a fixed one meant the *fallback* path declined too, and the pass went to the
+        // processor after all. Found by capping a large card's limits and watching it happen,
+        // which is the only way it was ever going to be found here.
+        //
+        // The overflow retry above still grows this to the exact figure when a batch produces
+        // more than the guess; what changed is only where the guess starts.
+        let mut room = HITS.min(self.room_for_hits(request, with_table));
 
         loop {
             let swept = if with_table {
@@ -680,14 +723,12 @@ impl Device {
         let row_bytes = spellings * std::mem::size_of::<u64>();
 
         let budget = {
-            let per_buffer = if self.info.max_alloc > 0 {
-                self.info.max_alloc
-            } else {
-                u64::MAX
-            };
+            let (max_alloc, global_mem) = self.limits();
 
-            let overall = if self.info.global_mem > 0 {
-                (self.info.global_mem as f64 * MEMORY_HEADROOM) as u64
+            let per_buffer = if max_alloc > 0 { max_alloc } else { u64::MAX };
+
+            let overall = if global_mem > 0 {
+                (global_mem as f64 * MEMORY_HEADROOM) as u64
             } else {
                 u64::MAX
             };
@@ -716,6 +757,47 @@ impl Device {
 }
 
 impl Device {
+    /// The largest hit buffer this device could take, given everything else the sweep must hold.
+    ///
+    /// A survivor costs sixteen bytes on the filtered path -- a mark and the hash beside it -- and
+    /// eight on the path that finishes the search on the device. Whatever is left after the
+    /// bitmaps and the stems is what there is to write into.
+    fn room_for_hits(&self, request: &SweepRequest<'_>, with_table: bool) -> usize {
+        let (max_alloc, global_mem) = self.limits();
+
+        // What the launch has to hold whatever happens, before anything is written into.
+        let mut committed = request.stems.bytes.len()
+            + std::mem::size_of_val(request.openings)
+            + std::mem::size_of_val(request.peeled.coarse)
+            + std::mem::size_of_val(request.peeled.fine);
+
+        if with_table {
+            committed += std::mem::size_of_val(request.peeled.hashes);
+        }
+
+        // A survivor costs sixteen bytes on the filtered path -- a mark and the hash beside it --
+        // and eight where the search finishes on the device.
+        let per_hit = if with_table { 8 } else { 16 };
+
+        let budget = if global_mem > 0 {
+            (global_mem as f64 * MEMORY_HEADROOM) as u64
+        } else {
+            u64::MAX
+        };
+
+        let by_total = budget.saturating_sub(committed as u64) / per_hit;
+
+        // And no single buffer may pass the per-allocation cap either. Each buffer holds one
+        // eight-byte word per hit -- the filtered path just has two of them.
+        let by_buffer = if max_alloc > 0 {
+            max_alloc / 8
+        } else {
+            u64::MAX
+        };
+
+        by_total.min(by_buffer).max(1) as usize
+    }
+
     /// The sweep that stops at the bitmaps, with the binary search finished here.
     ///
     /// The survivors are roughly one percent of the candidates, so what comes back over the bus is

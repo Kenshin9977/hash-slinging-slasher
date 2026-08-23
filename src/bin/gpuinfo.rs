@@ -346,6 +346,10 @@ const CHECKS: &[(&str, Check)] = &[
         "the sweep with the table left on the host",
         sweep_without_the_table,
     ),
+    (
+        "everything again, on a device pretending to be small",
+        a_small_card,
+    ),
     ("a stem longer than the register window", long_stems),
     ("an empty batch", degenerate),
 ];
@@ -579,6 +583,132 @@ fn sweep_without_the_table(device: &opencl::Device) -> Result<String, String> {
     std::env::remove_var(opencl::NO_TABLE);
 
     outcome
+}
+
+/// The whole thing again, with the device's memory limits capped until it has to fall back.
+///
+/// The two fallbacks -- leaving the peeled table on the host, and peeling in chunks -- exist for
+/// cards too small to take everything at once, and no card the author has is one. Forcing each
+/// path individually proves the path runs; this proves the *decision* runs, which is the part that
+/// would otherwise never execute anywhere until it executed on a stranger's laptop.
+///
+/// The cap is chosen against the fixture rather than being a round number: an eight mebibyte
+/// table and four mebibytes of bitmaps against a six mebibyte limit, so the table cannot go and
+/// the bitmaps still can. A cap under both would prove nothing, because then there is no fallback
+/// left to take.
+fn a_small_card(device: &opencl::Device) -> Result<String, String> {
+    // Big enough that the table is the largest single thing here, and small enough that a
+    // simulator running at a hundredth of a processor's speed still finishes.
+    let entries = 1 << 20;
+    let openings: Vec<u64> = (0..32)
+        .map(|n| hash64(&format!("small/tier{n}/")))
+        .collect();
+    let stems: Vec<String> = (0..4_000).map(|n| format!("part_{n:05}_body")).collect();
+
+    let mut wanted: Vec<u64> = stems
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| index % 11 == 0)
+        .map(|(index, stem)| feed(openings[index % openings.len()], stem.as_bytes()))
+        .collect();
+
+    // Padded out to a table that will not fit under the cap. Multiplied rather than hashed: these
+    // only have to be well spread and sorted, and a million `format!` calls would cost more than
+    // the check does.
+    wanted.extend((0..entries as u64).map(|n| n.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1));
+    wanted.sort_unstable();
+    wanted.dedup();
+
+    let packed = StemBatch::pack(&stems, true);
+    let filter = Filter::sized(wanted.iter(), wanted.len());
+    let (coarse, fine, coarse_bits, fine_bits) = filter.parts();
+
+    let request = SweepRequest {
+        stems: &packed,
+        openings: &openings,
+        bare: true,
+        peeled: PeeledSet {
+            hashes: &wanted,
+            coarse,
+            fine,
+            coarse_bits,
+            fine_bits,
+        },
+    };
+
+    let table = std::mem::size_of_val(request.peeled.hashes);
+    let bitmaps = std::mem::size_of_val(coarse) + std::mem::size_of_val(fine);
+    // Between the two on purpose: above the bitmaps, which the fallback still needs, and below
+    // the table, which is the thing that has to be left behind. A cap under both would prove
+    // nothing, since then there is no fallback left to take.
+    let cap = 6;
+
+    if table <= cap * (1 << 20) {
+        return Err(format!(
+            "the fixture's table is only {table} bytes, which fits under the {cap} MiB cap -- so \
+             this check would have proved nothing"
+        ));
+    }
+
+    std::env::set_var(opencl::PRETEND_MIB, cap.to_string());
+
+    let swept = device.sweep(&request).map_err(|why| why.to_string());
+
+    // The peel too, whose chunking is decided from the same two limits.
+    let endings: Vec<String> = (0..64).map(|n| format!("_v{n:02}.xmodel")).collect();
+    let ending_batch = StemBatch::pack(&endings, true);
+    let spellings: Vec<u64> = (0..8_000_u64)
+        .map(|n| hash64(&format!("id/{n}")) & ID_MASK)
+        .collect();
+
+    let peel_request = PeelRequest {
+        spellings: &spellings,
+        endings: &ending_batch,
+        no_ending: true,
+    };
+
+    let peeled = device.peel(&peel_request).map_err(|why| why.to_string());
+
+    std::env::remove_var(opencl::PRETEND_MIB);
+
+    let mut theirs = swept?;
+    let peeled = peeled?;
+
+    let cpu = Cpu::new();
+
+    let mut ours = cpu.sweep(&request).map_err(|why| why.to_string())?;
+
+    theirs.sort_unstable();
+    ours.sort_unstable();
+
+    if theirs != ours {
+        return Err(disagreement(&ours, &theirs));
+    }
+
+    assert_ne!(
+        ours.len(),
+        0,
+        "a comparison where neither side found anything proves nothing"
+    );
+
+    let ours_peeled = cpu.peel(&peel_request).map_err(|why| why.to_string())?;
+
+    if peeled != ours_peeled {
+        return Err(format!(
+            "peeled on a device pretending to be small: {} entries against {}",
+            peeled.len(),
+            ours_peeled.len()
+        ));
+    }
+
+    Ok(format!(
+        "capped at {cap} MiB against a {:.1} MiB table and {:.1} MiB of bitmaps; \
+         {} hits and {} peeled entries, identical",
+        table as f64 / (1 << 20) as f64,
+        bitmaps as f64 / (1 << 20) as f64,
+        ours.len(),
+        ours_peeled.len(),
+    ))
 }
 
 /// The backward peel, compared element for element in the layout both sides write.
