@@ -13,6 +13,7 @@
 
 mod device;
 pub mod ffi;
+pub mod guard;
 mod probe;
 
 pub use device::Device;

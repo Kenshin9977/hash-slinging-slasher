@@ -25,6 +25,12 @@ use slasher::ports::{Backend, PeelRequest, PeeledSet, StemBatch, SweepRequest};
 use slasher::{feed, hash64, Filter, BASIS, ID_MASK};
 
 fn main() {
+    // Started by another process to find out whether opening a device here is survivable. Says
+    // nothing on success, because the caller is a program and not a person. See `guard.rs`.
+    if opencl::guard::is_probe() {
+        std::process::exit(probe());
+    }
+
     println!("{}", opencl::report());
 
     let device = match opencl::Device::open() {
@@ -67,6 +73,32 @@ fn main() {
              different about your machine."
         );
         std::process::exit(1);
+    }
+}
+
+/// Open a device, build the kernel, ask it one question, and exit.
+///
+/// The exit code is the whole message: zero means a caller may open a device of its own, anything
+/// else means it should not. A caller that never gets a code at all -- because a driver took this
+/// process down building the kernel -- has learned the most useful thing of the three, and has
+/// learned it somewhere it can survive.
+///
+/// Having no device is success. The question asked is "does using a device here break", and on a
+/// machine with none the answer is no.
+fn probe() -> i32 {
+    match opencl::Device::open() {
+        Ok(Some(device)) => match known_vectors(&device) {
+            Ok(_) => 0,
+            Err(why) => {
+                eprintln!("{why}");
+                2
+            }
+        },
+        Ok(None) => 0,
+        Err(why) => {
+            eprintln!("{why}");
+            2
+        }
     }
 }
 

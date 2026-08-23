@@ -102,6 +102,11 @@ impl Device {
             Err(_) => return Ok(None),
         };
 
+        // Before anything is built for real, find out in a process that may die whether
+        // building is survivable here. See `guard.rs`: a driver too old for its own silicon takes
+        // this process down mid-`clBuildProgram`, and it does it before printing anything.
+        super::guard::survives_a_build()?;
+
         let info = match choice.trim() {
             "" | "auto" | "1" | "yes" | "true" | "on" => found[0].clone(),
             other => match other

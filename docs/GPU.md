@@ -196,11 +196,80 @@ there is not.
   the degenerate shapes a real pass produces at its edges. It is the command to run before
   trusting a device, and the output to paste when it does not work.
 
+### A second vendor: Intel
+
+**Measured** on an Intel Arrow Lake-U iGPU (32 execution units, 1800 MHz, shared memory),
+Ubuntu 24.04 in a container with the render node passed through, 2026-08-23.
+
+Every check passes and every answer is byte for byte the CPU's — the fold, both bitmaps, the
+binary search, stems past the register window, the degenerate shapes. The differential test suite
+is green. The kernel is portable across two vendors as written, with no vendor branches in it.
+
+| | forward hashes/s | against that machine's CPU |
+|---|---|---|
+| Intel Arrow Lake iGPU | 3.57 × 10^8 | **1.5×** |
+
+1.5× is a modest number and it is the honest one for an integrated GPU: thirty-two execution
+units sharing system memory with the processor they are supposed to be beating. It still means a
+laptop contributes something rather than nothing, and it is the first evidence that the kernel
+does not need a discrete card to be correct.
+
+The device also reports numbers that differ from NVIDIA's in the directions worth knowing: 64 KiB
+of local memory against 48, a 4 GiB maximum allocation out of 13.7 GiB visible, and a preferred
+work group multiple the runtime chooses per kernel. Everything the adapter reads at run time
+rather than assuming, it had to.
+
+### A driver that takes the process with it
+
+This is the finding worth the most, and it is not about performance.
+
+Ubuntu 24.04 ships Intel's compute runtime from November 2023. Handed an Arrow Lake iGPU — a year
+newer than the driver — its compiler segmentation-faults building a **sixty-three byte** kernel
+that writes a single one. Not this kernel; *any* kernel. Confirmed three ways: with `ocloc`, which
+compiles this kernel for the device without complaint; with forty lines of C, which reproduces the
+crash on the trivial kernel; and by installing the current runtime (NEO 26.31, IGC 2.40), after
+which both kernels build and everything above passes.
+
+So the portability problem was never the kernel. But underneath it was a real defect here:
+
+**The same `clBuildProgram` that returns a clean `CL_BUILD_PROGRAM_FAILURE` to a C program kills a
+Rust one.** Intel's compiler installs a handler to catch its own faults and turn them into an error
+code, and in a Rust process it does not get to. The C test prints "the driver refused to build the
+kernel" and carries on. The grind binary died at startup with no message at all.
+
+For this project specifically that is the worst possible failure. `AGENTS.md` promises one command
+that grinds for hours while nobody is watching, and a binary that segmentation-faults the moment it
+starts — on a laptop whose owner did nothing wrong — does not fail that promise politely.
+
+`src/adapters/opencl/guard.rs` is the answer. Before the real process opens a device, it asks
+`gpuinfo` to open one first, in a process that is allowed to die. A subprocess rather than a signal
+handler, because catching the fault in-process means running Rust on a stack a foreign compiler has
+already corrupted, in a program that will go on to report findings. A sibling binary rather than a
+`fork`, because `fork` does not exist on Windows and a Windows contributor needs this as much.
+
+Measured against the broken driver, before and after:
+
+| | before | after |
+|---|---|---|
+| `gpuinfo` | segmentation fault, no output | exits 1, says which driver and what to install |
+| any other binary | segmentation fault, no output | says so once, grinds on the CPU |
+| `cargo test` | segmentation fault | 6 of 6 pass |
+
+The test suite skipping rather than failing is deliberate. A driver too old for its own silicon is
+the contributor's machine, not this repository's code, and a red `cargo test` that somebody cannot
+fix is how contributions stop. It is said loudly and skipped; `gpuinfo` is the tool whose job is to
+fail over it.
+
+None of this would have been found by reading the kernel, by any of the three CI nets, or on an
+NVIDIA card. It took ten minutes on one real device from another vendor.
+
 ### What has not been checked, and by whom it can be
 
-**No AMD or Intel device has run this.** The author has an RTX 3080 and nothing else, which is
-precisely the constraint that made OpenCL the right choice and does nothing whatever to prove the
-choice worked. What stands in for hardware, in `.github/workflows/gpu.yml`:
+**No AMD device has run this.** Intel now has, and it took one afternoon to find a defect that no
+amount of reading would have. AMD is the vendor that matters most here: it is what most of the
+people helping own, and GCN and RDNA fail differently from anything above -- wavefronts of 64
+rather than 32, 32 KiB of local memory per work group on GCN where Intel gives 64, and a compiler
+front end of its own. What stands in for that hardware, in `.github/workflows/gpu.yml`:
 
 - **PoCL**, a conformant OpenCL implementation on a plain CPU runner, which catches what an NVIDIA
   driver forgives.
@@ -211,8 +280,9 @@ choice worked. What stands in for hardware, in `.github/workflows/gpu.yml`:
 - **`clang -x cl` targeting `amdgcn` and `spir64`**, which puts the kernel through the front ends
   AMD and Intel actually ship, without a card and in about a second.
 
-Those three are not a GPU. **If you have an AMD or Intel device, running `gpuinfo` and pasting the
-output is worth more than all of them**, and it takes ten seconds.
+Those three are not a GPU. **If you have an AMD device, running `gpuinfo` and pasting the output is
+worth more than all of them**, and it takes ten seconds. The Intel section above is what ten seconds
+of one machine bought.
 
 ### The things most likely to be wrong on a device nobody here owns
 
@@ -297,6 +367,7 @@ been adopted:
 ---
 
 *Measurements before the experiment section: Ryzen 7 7800X3D, 32 GB, Radeon RX 7900 XT,
-Windows 11, 2026-08-19. Measurements in it: Ryzen 9 3900X, RTX 3080, Windows 11, 2026-08-23.
+Windows 11, 2026-08-19. Measurements in it: Ryzen 9 3900X with an RTX 3080 on Windows 11, and
+an Intel Arrow Lake-U iGPU on Ubuntu 24.04, both 2026-08-23.
 Figures for `acts` are from reading its source; figures for `codehash` are its author's, on an
 RTX 3090, and are quoted rather than reproduced.*
