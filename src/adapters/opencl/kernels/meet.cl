@@ -2,9 +2,18 @@
 //
 // OpenCL 1.2, deliberately. Not 2.x, not 3.0, and nothing behind an extension: this has to build
 // on a Radeon from 2013 and on an Intel iGPU that shipped in a laptop, because those are the
-// machines the people helping here actually own. Everything used below is core 1.2 -- `ulong`
-// arithmetic, `__local` memory, `atomic_inc` on a global `uint`. No subgroups, no printf, no
-// 64-bit atomics, no assumption about how wide a wavefront is.
+// machines the people helping here actually own.
+//
+// What this asks of a device is close to nothing: `ulong` arithmetic and `atomic_inc` on a global
+// `uint`, both core since 1.1. **No local memory and no barriers at all** -- so the limit that
+// differs most between vendors, 32 KiB of shared memory per work group on GCN against 64 on Intel
+// and 48 on NVIDIA, is not a constraint here in either direction. No subgroups, so nothing depends
+// on a wavefront being 64 wide or 32. No extensions, no printf, no 64-bit atomics.
+//
+// The filter lives in global memory rather than being staged into local, which is what makes that
+// true. It is also the right choice on its own terms: a peeled batch reaches twenty million
+// entries and no device has shared memory in that neighbourhood, so staging it would mean
+// splitting the batch to fit a cache that would then be too small to filter anything.
 //
 // The forward kernel is `Meet::sweep` from search.rs, thread for stem. The backward kernel is
 // `Peeled::build`, which nobody optimised because on a CPU the forward sweep dwarfed it -- and

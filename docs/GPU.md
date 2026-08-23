@@ -265,11 +265,26 @@ NVIDIA card. It took ten minutes on one real device from another vendor.
 
 ### What has not been checked, and by whom it can be
 
-**No AMD device has run this.** Intel now has, and it took one afternoon to find a defect that no
-amount of reading would have. AMD is the vendor that matters most here: it is what most of the
-people helping own, and GCN and RDNA fail differently from anything above -- wavefronts of 64
-rather than 32, 32 KiB of local memory per work group on GCN where Intel gives 64, and a compiler
-front end of its own. What stands in for that hardware, in `.github/workflows/gpu.yml`:
+**No AMD device has run this**, and that is a gap in the evidence rather than in the support. There
+is no vendor branch anywhere in the kernel or the adapter, and nothing about NVIDIA in either: an
+AMD contributor runs the same binary as everybody else and it will use their card. What is missing
+is somebody having watched it happen.
+
+Two of the three things usually feared here turn out not to apply, and it is worth saying which:
+
+- **Wavefront width does not matter.** Nothing uses subgroups, so nothing depends on 64 against 32.
+  Work group size is asked of the driver per kernel and rounded down to whatever multiple it says
+  it prefers.
+- **The GCN shared-memory limit does not matter either.** The kernel uses no local memory and no
+  barriers at all, so the 32 KiB per work group that GCN allows -- against 64 on Intel and 48 on
+  NVIDIA -- is not a ceiling it can reach. The filter is read from global memory, which it has to
+  be: a peeled batch reaches twenty million entries and no device has shared memory in that
+  neighbourhood.
+
+What is left is the compiler, and that is the one to worry about. AMD's front end is its own, and
+the only real portability failure found so far was a vendor compiler crashing rather than anything
+about the silicon. It is exactly the class of thing that cannot be reasoned about from here. What
+stands in for the hardware meanwhile, in `.github/workflows/gpu.yml`:
 
 - **PoCL**, a conformant OpenCL implementation on a plain CPU runner, which catches what an NVIDIA
   driver forgives.
