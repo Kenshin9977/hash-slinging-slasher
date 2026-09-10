@@ -1,0 +1,2 @@
+115ff13e350de712,mc/mtl_c_t8_camo_pinstripe_white
+571d169edae329a1,mc/mtl_c_t8_camo_pinstripe_blue
