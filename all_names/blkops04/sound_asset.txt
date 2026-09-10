@@ -211,6 +211,7 @@ c5a4eb3d8d321b1,zmb\ai\werewolf\vox\pain_2.0\wwolf_pain_02.ln100.pc.snd
 47a41f3a8b86327d,zmb\level\zm_escape\gondola\gondola_gate_close.ln100.pc.snd
 5c6f4b10a065b2e1,zmb\level\zm_escape\gondola\gondola_gate_open.ln100.pc.snd
 3427647fe384b1f7,zmb\level\zm_escape\gondola\gondola_lp.ll100.pc.snd
+98d82b85aae4b,zmb\level\zm_escape\gondola\gondola_motor_loop.ll100.pc.snd
 22d42ab1d5cf8283,zmb\level\zm_escape\gondola\gondola_motor_start.ln100.pc.snd
 5d7c0205673edaa7,zmb\level\zm_escape\gondola\gondola_motor_stop.ln100.pc.snd
 2f0e58988c022725,zmb\level\zm_escape\gondola\gondola_start.ln100.pc.snd
