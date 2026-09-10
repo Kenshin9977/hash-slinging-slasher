@@ -1,0 +1,12 @@
+77f82056e358b21,vox/scripted/mpl/abnd/vox_abnd_dbl_role_invst_01.rn75.pc.en.snd
+1718ee160efe1521,vox/scripted/mpl/adgi/vox_adgi_dbl_role_invst_01.rn75.pc.en.snd
+173136b1e4c5523c,vox/scripted/mpl/abnd/vox_abnd_dbl_role_invst_00.rn75.pc.en.snd
+1929dc4f107bb1f2,vox/scripted/mpl/anbo/vox_anbo_dbl_role_invst_00.rn75.pc.en.snd
+26caa2c2858ddc3c,vox/scripted/mpl/adgi/vox_adgi_dbl_role_invst_00.rn75.pc.en.snd
+2b14671cf60fdd44,vox/scripted/mpl/anme/vox_anme_dbl_role_invst_00.rn75.pc.en.snd
+2b35d909556c7c6f,vox/scripted/mpl/anbo/vox_anbo_dbl_role_invst_01.rn75.pc.en.snd
+5d95a9d4bc0da0af,vox/scripted/mpl/ahva/vox_ahva_dbl_role_invst_01.rn75.pc.en.snd
+67e07fd19d030d32,vox/scripted/mpl/ahva/vox_ahva_dbl_role_invst_00.rn75.pc.en.snd
+6825a07c05f4befc,vox/scripted/mpl/ami6/vox_ami6_dbl_role_invst_00.rn75.pc.en.snd
+6b721ebd7e4807e1,vox/scripted/mpl/ami6/vox_ami6_dbl_role_invst_01.rn75.pc.en.snd
+7ab0fb65aab4d509,vox/scripted/mpl/anme/vox_anme_dbl_role_invst_01.rn75.pc.en.snd
