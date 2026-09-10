@@ -1,0 +1,5 @@
+1971c92b08d668b7,vm_zm_impaler_t9_putaway
+26b82040224ecc7c,vm_zm_impaler_t9_fire
+29abf35cece78579,vm_zm_impaler_t9_pullout
+37d0a15a7def8ced,vm_zm_impaler_t9_reload
+625fe5407bdfb3be,vm_pistol_satlink_t9_melee
