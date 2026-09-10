@@ -1,0 +1,2 @@
+af21d5ccc5e7f10,ui_icon_scorestreaks_overwatch_snipers_01
+2816694178b99b8a,uie_ui_hud_icepick_item_bg
