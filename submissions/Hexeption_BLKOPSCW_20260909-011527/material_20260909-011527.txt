@@ -1,0 +1,2 @@
+2e67205e781a4092,mc/mtl_p9_zm_platinum_conversion_machine_light_green_01
+6c31676c58e320a1,mc/mtl_p9_zm_platinum_conversion_machine_light_blue
