@@ -1,0 +1,2 @@
+2b45fbd026511c36,vm_sniper_vanguard_ads_multizoom_upper_up
+5c04d5750527487f,vm_sniper_vanguard_ads_multizoom_upper_down
