@@ -1,0 +1,4 @@
+499fc40cfc710d0,mc/mtl_wpn_t8_sniper_sniver_rail_attach_sig_02
+7d25e635ce9b446,mc/mtl_p8_zm_gla_drum_large_01_metal
+53867592f1b73d92,mc/mtl_p8_zm_gla_drum_large_01_wood
+699c928a203ac806,mc/mtl_veh_t8_civ_sedan_limo_decal_body_04_01_dead
