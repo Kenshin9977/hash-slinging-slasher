@@ -1,0 +1,3 @@
+1f5c4c26239409d,i_c_t8_camo_pinstripe_white_s
+4c8469fbae84c58,i_c_t8_camo_pinstripe_blue_s
+562aaf2bad9b0235,loot_ui_icon_outfit_tigerstripe_base_pal_com1_nomad_outfit_bundle
