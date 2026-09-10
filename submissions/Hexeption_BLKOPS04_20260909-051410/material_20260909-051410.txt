@@ -1,0 +1,2 @@
+194a6a881ccb51e9,mc/mtl_c_t8_ruin_snake_camo_scales_tan
+66b4d6831e49ae79,mc/mtl_c_t8_ruin_snake_camo_scales_black
