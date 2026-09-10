@@ -1,0 +1,4 @@
+2215e0fa18529c0,mc/mtl_c_t8_mp_spe_battery_knight1_shoulder_inner_decal
+21007cd817873cba,mc/mtl_c_t8_camo_dlc4_mean_look_04_alt2
+3b2d970a7aa18154,mc/mtl_c_t8_mp_spe_swat_roman2_decal_vest
+73766b52edd01a5d,mc/mtl_c_t8_camo_dlc4_mean_look_03_alt2
