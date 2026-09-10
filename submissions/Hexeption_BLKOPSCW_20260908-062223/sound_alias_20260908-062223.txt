@@ -1,0 +1,3 @@
+824e827f8a38d4d,veh_cargotruck_peel_ice
+63529d614881fc71,veh_cargotruck_road_ice
+7c8756b8b9b54b2c,veh_cargotruck_slide_ice
