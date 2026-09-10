@@ -1,0 +1,4 @@
+25b4f2b33c843ef6,p8_zm_gla_cel_tree_1st_floor_02_dead
+3c248332c49768eb,p8_zm_gla_cel_tree_1st_floor_03_dead
+73e16c2a2dc11cb2,p8_zm_red_scroll_recorder_01
+7c3497165405abc9,p8_zm_gla_cel_tree_1st_floor_01_dead
