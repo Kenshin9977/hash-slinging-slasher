@@ -5,15 +5,15 @@
 
 <table>
 <tr><th align="left"><code>blkops04/</code></th>
-<th align="right" colspan="2">132,651 names in 6 file(s)</th>
+<th align="right" colspan="2">133,388 names in 6 file(s)</th>
 </tr>
 <tr><th align="left">asset type</th><th align="right">found here</th><th align="right">named, of all in the game</th>
 </tr>
-<tr><td><code>xmodel</code></td><td align="right">9,952</td><td align="right">50,075 / 61,139 &nbsp;(81.9%)</td></tr>
-<tr><td><code>material</code></td><td align="right">34,039</td><td align="right">106,153 / 122,750 &nbsp;(86.5%)</td></tr>
-<tr><td><code>image</code></td><td align="right">33,475</td><td align="right">140,502 / 167,360 &nbsp;(84.0%)</td></tr>
+<tr><td><code>xmodel</code></td><td align="right">9,960</td><td align="right">50,083 / 61,139 &nbsp;(81.9%)</td></tr>
+<tr><td><code>material</code></td><td align="right">34,072</td><td align="right">106,186 / 122,750 &nbsp;(86.5%)</td></tr>
+<tr><td><code>image</code></td><td align="right">33,479</td><td align="right">140,506 / 167,360 &nbsp;(84.0%)</td></tr>
 <tr><td><code>xanim</code></td><td align="right">4,961</td><td align="right">16,930 / 21,968 &nbsp;(77.1%)</td></tr>
-<tr><td><code>sound_asset</code></td><td align="right">34,204</td><td align="right">42,588 / 79,263 &nbsp;(53.7%)</td></tr>
+<tr><td><code>sound_asset</code></td><td align="right">34,896</td><td align="right">43,280 / 79,263 &nbsp;(54.6%)</td></tr>
 <tr><td><code>sound_alias</code></td><td align="right">16,020</td><td align="right">42,491 / 50,043 &nbsp;(84.9%)</td></tr>
 </table>
 
@@ -43,13 +43,13 @@ the community tables, against every id the game holds.
 
 They are not the same measure, and the second is much the larger.
 
-Where `image` under `blkops04/` reads 33,475 and 140,502 / 167,360:
-this project found 33,475 of the 140,502 names anybody has for that pool, and
-26,858 of its ids are still nameless. The percentage is the fraction named,
+Where `image` under `blkops04/` reads 33,479 and 140,506 / 167,360:
+this project found 33,479 of the 140,506 names anybody has for that pool, and
+26,854 of its ids are still nameless. The percentage is the fraction named,
 not the fraction found here.
 
-The emptiest pool is `sound_asset` under `blkops04/`: 42,588 of 79,263 named,
-so 36,675 ids carry no name at all. That is the largest unworked ground
+The emptiest pool is `sound_asset` under `blkops04/`: 43,280 of 79,263 named,
+so 35,983 ids carry no name at all. That is the largest unworked ground
 here, and it is invisible from a count on its own.
 
 The community half of that is measured against `cod-name-db` on 2026-08-24 and stored in

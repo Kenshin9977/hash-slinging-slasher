@@ -155,6 +155,7 @@ table under a name you would not have guessed is the thing you are about to rebu
 | \ cw final-byte after upstream corpus refresh\ | 1 | 1 | 1 | 37,273 | 37,273 | 37,273 | 37,273 | 2026-08-29 | 2026-08-29 | untried |
 | numbered families on two axes | 1 | 2 | 7 | 265,407 | 37,915 | 22,119 | 22,119 | 2026-08-27 | 2026-08-27 | live |
 | external source filenames | 1 | 1 | 28 | 1,226,186 | 43,792 | 43,792 | 43,792 | 2026-08-27 | 2026-08-27 | untried |
+| zombies vo grids with suffixes cracked from the zm scripts' hashed vo say/function a2bd5a0c arguments | 1 | 1 | 67 | 3,073,427 | 45,872 | 45,872 | 45,872 | 2026-09-10 | 2026-09-10 | untried |
 | image siblings of confirmed materials | 1 | 147 | 6,113 | 284,511,834 | 46,542 | 393 | 2,417,181 | 2026-08-19 | 2026-09-10 | spent |
 | image interior counterparts after richkiller | 1 | 1 | 18 | 904,787 | 50,265 | 50,265 | 50,265 | 2026-09-04 | 2026-09-04 | untried |
 | \ cold war rare shared-token splice family 2401-2700 xanim\ | 1 | 1 | 8 | 409,075 | 51,134 | 51,134 | 51,134 | 2026-08-28 | 2026-08-28 | untried |
@@ -175,6 +176,7 @@ table under a name you would not have guessed is the thing you are about to rebu
 | vo sound files derived from known vox  sound aliases: en\vox\scripted\<mode>\<map>\<alias> <n>.sn100 | 1 | 1 | 10,388 | 797,443,920 | 76,765 | 76,765 | 76,765 | 2026-09-10 | 2026-09-10 | untried |
 | bo3 mod tools asset names | 1 | 2 | 22 | 1,735,532 | 78,887 | 78,887 | 78,887 | 2026-08-24 | 2026-08-24 | live |
 | rare-token-compound-splice-model | 1 | 2 | 60 | 5,611,060 | 93,517 | 80,164 | 80,164 | 2026-08-20 | 2026-08-20 | live |
+| zombies character conversations: vox <map> plr <n> <idx> banter <chr1> <chr2> <v> from zm vo.gsc + zm characters.gsc chrnames | 1 | 1 | 625 | 61,424,640 | 98,279 | 98,279 | 98,279 | 2026-09-10 | 2026-09-10 | untried |
 | family grid current | 1 | 1 | 38 | 3,786,603 | 99,647 | 99,647 | 99,647 | 2026-08-31 | 2026-08-31 | untried |
 | \ cw sound-alias token insertion and deletion 20260830\ | 1 | 1 | 70 | 7,641,905 | 109,170 | 109,170 | 109,170 | 2026-08-30 | 2026-08-30 | untried |
 | rare shared token splice 13 30 current | 1 | 1 | 3 | 331,149 | 110,383 | 110,383 | 110,383 | 2026-09-02 | 2026-09-02 | untried |
@@ -714,11 +716,11 @@ table under a name you would not have guessed is the thing you are about to rebu
 | all-boundary cores x uncarried endings, 3 segment(s), top 100000 | 1 | 2 | 15 | 364,606,846,032 | 24,307,123,068 | 15,191,951,918 | 15,191,951,918 | 2026-09-09 | 2026-09-09 | live |
 | black ops 3 build vocabulary | 1 | 2 | 293 | 7,358,148,299,220 | 25,113,134,127 | 15,655,634,679 | 63,432,312,924 | 2026-08-22 | 2026-08-22 | cooling |
 | harvested strings, heads of length 3 | 1 | 3 | 10 | 253,271,342,362 | 25,327,134,236 | 192,093,060 | 192,093,060 | 2026-08-24 | 2026-09-02 | live |
-| images derived from materials | 1 | 22 | 6,497 | 32,116,320,121,146 | 25,796,241,061 | 13,498,822,351 | 198,324,939,673 | 2026-08-19 | 2026-09-08 | spent |
 | all-boundary cores x uncarried endings, 3 segment(s), top 200000 | 1 | 2 | 28 | 729,219,246,078 | 26,043,544,502 | 24,307,308,202 | 28,046,894,079 | 2026-09-09 | 2026-09-09 | live |
 | all-boundary cores x uncarried endings, 5 segment(s), top 100000 | 1 | 1 | 7 | 182,310,923,091 | 26,044,417,584 | 26,044,417,584 | 26,044,417,584 | 2026-09-09 | 2026-09-09 | untried |
 | uncarried beginnings slice 0-26 | 1 | 1 | 1 | 26,086,235,266 | 26,086,235,266 | 26,086,235,266 | 26,086,235,266 | 2026-08-28 | 2026-08-28 | untried |
 | all-boundary cores x uncarried endings, 4 segment(s), top 100000 | 1 | 2 | 7 | 186,050,560,487 | 26,578,651,498 | 1,870,318,703 | 36,461,984,616 | 2026-09-02 | 2026-09-09 | spent |
+| images derived from materials | 1 | 23 | 6,555 | 34,890,725,561,940 | 26,777,226,064 | 13,498,822,351 | 47,834,576,565 | 2026-08-19 | 2026-09-10 | cooling |
 | confirmed-only sound all-boundary uncarried endings current | 1 | 1 | 1 | 30,069,300,690 | 30,069,300,690 | 30,069,300,690 | 30,069,300,690 | 2026-09-01 | 2026-09-01 | untried |
 | v2 material borrowed endings, ranks 1001-2000 | 1 | 2 | 12 | 426,823,897,500 | 35,568,658,125 | 23,561,037,500 | 71,591,520,000 | 2026-08-25 | 2026-08-28 | cooling |
 | all-boundary sound cores x uncarried sound endings, 5 segment(s), top 300000 | 1 | 2 | 18 | 662,121,707,065 | 36,784,539,281 | 35,846,695,959 | 52,727,875,759 | 2026-08-29 | 2026-08-31 | live |
@@ -825,7 +827,7 @@ table under a name you would not have guessed is the thing you are about to rebu
 | weapon vocabulary growth, then attachment unfolding | 1 | 1 | 0 | - | - | - | - | 2026-08-19 | 2026-08-19 | unmeasured |
 | names already found and verified, but never sent | 1 | 1 | 0 | - | - | - | - | 2026-08-19 | 2026-08-19 | unmeasured |
 
-747 distinct methods, run 843 ways between them, across 2880 runs. `names` is what each run
+749 distinct methods, run 845 ways between them, across 2883 runs. `names` is what each run
 found new to the machine that ran it. A blank candidate count means no run of that method
 recorded one, so it cannot be ranked -- see `--unattributed`.
 <!-- END GENERATED REGISTRY -->
