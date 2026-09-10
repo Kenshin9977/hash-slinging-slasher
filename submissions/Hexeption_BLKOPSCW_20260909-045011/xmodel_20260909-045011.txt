@@ -1,0 +1,8 @@
+363ae9fdf78ea7f7,clt/p9_rm_vlg_ceramic_roof_32x64a
+3ff46c26e9b5ef6e,cltp/p9_rm_vlg_ceramic_roof_32x32a
+51cf9226f3f9d7ec,cltp/p9_rm_vlg_ceramic_roof_32x16a
+59061d7649cf9efb,cltp/p9_rm_vlg_ceramic_roof_64x16a
+5ac3d326f9215f83,cltp/p9_rm_vlg_ceramic_roof_32x64a
+61e2aafe1061b012,clt/p9_rm_vlg_ceramic_roof_32x32a
+73a220fe1a8da5c8,clt/p9_rm_vlg_ceramic_roof_32x16a
+791247afa2a62147,clt/p9_rm_vlg_ceramic_roof_64x16a
