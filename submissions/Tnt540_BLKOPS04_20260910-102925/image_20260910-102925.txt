@@ -1,0 +1,2 @@
+26c1931901027662,loot02_ui_icon_outfit_northern_lights_legendary1_prophet_outfit_bundle
+3256d074e40f03f3,i_rob_zm_viewarm_acid_r
