@@ -36,7 +36,6 @@ glove
 grip_wz
 hardpoint
 holo_wz
-k1x6ko49h
 knife
 launcher
 leap_end
@@ -56,7 +55,6 @@ recon
 reddot_wz
 reflex_wz
 rf_pistol
-ruu16mf_u
 shotgun
 slide_end
 slide_int
