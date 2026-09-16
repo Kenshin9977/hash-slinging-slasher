@@ -5,16 +5,16 @@
 
 <table>
 <tr><th align="left"><code>blkops04/</code></th>
-<th align="right" colspan="2">160,305 names in 6 file(s)</th>
+<th align="right" colspan="2">162,458 names in 6 file(s)</th>
 </tr>
 <tr><th align="left">asset type</th><th align="right">found here</th><th align="right">named, of all in the game</th>
 </tr>
-<tr><td><code>xmodel</code></td><td align="right">10,883</td><td align="right">51,006 / 61,139 &nbsp;(83.4%)</td></tr>
-<tr><td><code>material</code></td><td align="right">35,406</td><td align="right">107,520 / 122,750 &nbsp;(87.6%)</td></tr>
-<tr><td><code>image</code></td><td align="right">34,587</td><td align="right">141,614 / 167,360 &nbsp;(84.6%)</td></tr>
-<tr><td><code>xanim</code></td><td align="right">5,455</td><td align="right">17,424 / 21,968 &nbsp;(79.3%)</td></tr>
-<tr><td><code>sound_asset</code></td><td align="right">56,266</td><td align="right">64,650 / 79,263 &nbsp;(81.6%)</td></tr>
-<tr><td><code>sound_alias</code></td><td align="right">17,708</td><td align="right">44,179 / 50,043 &nbsp;(88.3%)</td></tr>
+<tr><td><code>xmodel</code></td><td align="right">11,037</td><td align="right">51,160 / 61,139 &nbsp;(83.7%)</td></tr>
+<tr><td><code>material</code></td><td align="right">35,657</td><td align="right">107,771 / 122,750 &nbsp;(87.8%)</td></tr>
+<tr><td><code>image</code></td><td align="right">34,772</td><td align="right">141,799 / 167,360 &nbsp;(84.7%)</td></tr>
+<tr><td><code>xanim</code></td><td align="right">5,462</td><td align="right">17,431 / 21,968 &nbsp;(79.3%)</td></tr>
+<tr><td><code>sound_asset</code></td><td align="right">57,178</td><td align="right">65,562 / 79,263 &nbsp;(82.7%)</td></tr>
+<tr><td><code>sound_alias</code></td><td align="right">18,352</td><td align="right">44,823 / 50,043 &nbsp;(89.6%)</td></tr>
 </table>
 
 </td>
@@ -22,16 +22,16 @@
 
 <table>
 <tr><th align="left"><code>blkopscw/</code></th>
-<th align="right" colspan="2">71,293 names in 6 file(s)</th>
+<th align="right" colspan="2">71,308 names in 6 file(s)</th>
 </tr>
 <tr><th align="left">asset type</th><th align="right">found here</th><th align="right">named, of all in the game</th>
 </tr>
 <tr><td><code>xmodel</code></td><td align="right">3,713</td><td align="right">68,178 / 85,612 &nbsp;(79.6%)</td></tr>
 <tr><td><code>material</code></td><td align="right">21,035</td><td align="right">141,406 / 158,158 &nbsp;(89.4%)</td></tr>
-<tr><td><code>image</code></td><td align="right">10,120</td><td align="right">209,128 / 245,235 &nbsp;(85.3%)</td></tr>
-<tr><td><code>xanim</code></td><td align="right">5,013</td><td align="right">21,344 / 28,468 &nbsp;(75.0%)</td></tr>
+<tr><td><code>image</code></td><td align="right">10,122</td><td align="right">209,130 / 245,235 &nbsp;(85.3%)</td></tr>
+<tr><td><code>xanim</code></td><td align="right">5,016</td><td align="right">21,347 / 28,468 &nbsp;(75.0%)</td></tr>
 <tr><td><code>sound_asset</code></td><td align="right">1,859</td><td align="right">79,797 / 97,217 &nbsp;(82.1%)</td></tr>
-<tr><td><code>sound_alias</code></td><td align="right">29,553</td><td align="right">37,972 / 50,890 &nbsp;(74.6%)</td></tr>
+<tr><td><code>sound_alias</code></td><td align="right">29,563</td><td align="right">37,982 / 50,890 &nbsp;(74.6%)</td></tr>
 </table>
 
 </td>
@@ -43,13 +43,13 @@ the community tables, against every id the game holds.
 
 They are not the same measure, and the second is much the larger.
 
-Where `image` under `blkops04/` reads 34,587 and 141,614 / 167,360:
-this project found 34,587 of the 141,614 names anybody has for that pool, and
-25,746 of its ids are still nameless. The percentage is the fraction named,
+Where `image` under `blkops04/` reads 34,772 and 141,799 / 167,360:
+this project found 34,772 of the 141,799 names anybody has for that pool, and
+25,561 of its ids are still nameless. The percentage is the fraction named,
 not the fraction found here.
 
-The emptiest pool is `sound_alias` under `blkopscw/`: 37,972 of 50,890 named,
-so 12,918 ids carry no name at all. That is the largest unworked ground
+The emptiest pool is `sound_alias` under `blkopscw/`: 37,982 of 50,890 named,
+so 12,908 ids carry no name at all. That is the largest unworked ground
 here, and it is invisible from a count on its own.
 
 The community half of that is measured against `cod-name-db` on 2026-08-24 and stored in
