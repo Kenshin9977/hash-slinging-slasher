@@ -1,0 +1,2 @@
+79d666a8be0a1c33,vm_t8_drone_seeker_mine_hand_pose_l
+79d684a8be0a4f2d,vm_t8_drone_seeker_mine_hand_pose_r
