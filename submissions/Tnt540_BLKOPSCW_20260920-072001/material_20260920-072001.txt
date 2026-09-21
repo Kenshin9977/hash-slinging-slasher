@@ -1,0 +1,2 @@
+3dacdb7177aef94,mc/mtl_veh_t8_mil_atv_decal_bolt_washer
+23dcf531d05bba93,mc/mtl_c_t8_mp_spe_recon_samurai1_shoulder_left_armor_gold
