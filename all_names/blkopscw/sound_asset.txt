@@ -4,8 +4,12 @@
 2c41026701063c70,amb/domestic/payphone/payphone_ring.rn75.pc.all.snd
 4ad547d398de6cee,amb/electronics/computer/loops/reel/reel.rr75.pc.all.snd
 dcb65ad80fa5b76,amb/environment/water/sprinkler/small/sprinkler_sml_00.rr75.pc.all.snd
+430e840db0ecad1c,amb/environment/wind/calm/line/line_l.rl75.pc.all.snd
+28a7b40f0559219a,amb/environment/wind/calm/line/line_r.rl75.pc.all.snd
 7c90cf760d58446e,amb/environment/wind/howl/indoor/indoor.rn75.pc.all.snd
 1b046c9a0aec0207,amb/industrial/cement_mixer/cement_mixer_lp.rr75.pc.all.snd
+e8ab62dbf0695ec,amb/industrial/heater/heater.rl75.pc.all.snd
+169d5a67d7aedeca,amb/industrial/heater/heater.rr75.pc.all.snd
 51744f8a77fd9128,chr/health/2k20/critical_health_enter.ln75.pc.all.snd
 4397133371b70e94,evt/cp_rus_amerika/elevator/evt_tower_elevator_lp_lfe.rl75.pc.all.snd
 5d5266424d43fafb,evt/cp_rus_kgb/obj_frame/evt_use_computer_power_off.ln75.pc.all.snd
@@ -168,6 +172,7 @@ d79e86d82c61dcb,mpl/mpl_casino/chips/chips_01.ln75.pc.all.snd
 4481fb6bd7adcda,uin/2k20/battlepass/tier_purchase/battlepass_tier_purch_s6.sn75.pc.all.snd
 4691d5e947151d1d,uin/2k20/battlepass/tier_purchase/battlepass_tier_purch_s7.sn75.pc.all.snd
 3f47b044418b7fd4,uin/2k20/battlepass/tier_purchase/battlepass_tier_purch_s8.sn75.pc.all.snd
+396fa437e07804cd,veh/horns/loops/muscle_car_horn.ll75.pc.all.snd
 47370e49aa78862a,vox/scripted/mpl/abnd/vox_abnd_dbl_atpsy_oprt_00.rn75.pc.en.snd
 192ed62bd28eb707,vox/scripted/mpl/abnd/vox_abnd_dbl_atpsy_oprt_01.rn75.pc.en.snd
 3048b68c96e7325c,vox/scripted/mpl/abnd/vox_abnd_dbl_rnd_end_dblagt_dead_dblagt_00.rn75.pc.en.snd
