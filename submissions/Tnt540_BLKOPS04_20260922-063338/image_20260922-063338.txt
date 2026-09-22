@@ -1,0 +1,2 @@
+5ef8b46b4c2c2f81,ui_icon_weapon_camo_active_sig_smg_handling_hunter
+6e9c6886b08f7af9,ui_icon_weapon_camo_active_sig_ar_modular_porcelain
