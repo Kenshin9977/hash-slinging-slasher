@@ -1,0 +1,2 @@
+6cd6e236fe02a9d2,zmb/level/zm_silver/quest/main/aetherbomb/explo_base/explo_base_00.ln75.pc.all.snd
+7c3a90f74aced744,zmb/level/zm_silver/quest/main/aetherbomb/explo_base/explo_base_00.rn75.pc.all.snd
