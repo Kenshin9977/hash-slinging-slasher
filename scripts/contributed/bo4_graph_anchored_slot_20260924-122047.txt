@@ -1,0 +1,202 @@
+# Graph-anchored letter slot. The Greyhoundx zone reader gives, for every unnamed image, the named
+# material that holds it and its semantic slot (and for every unnamed material, the named xmodel).
+# Template per target: i_<material stem cut 0-3>_<WORD><slot suffix> (materials: learned prefix +
+# model stem), WORD = every string of 1-5 chars over [a-z0-9] and 6 over [a-z], on a GPU (3.6 min
+# for 25,734 prefixes on a 3090). 40/40 positive controls, every hit exact at 63 bits.
+# Yield: 757 images (39% of the targets), 51 materials, then 53 images under those materials.
+# It reaches words no dictionary holds: silde, gueges, serew, lables, punck, beton (French).
+
+# ===== slot_jobs.py =====
+
+"""Graph-anchored letter slot: for each unnamed image held by a named material, templates
+i_<material stem cut k>_<WORD><suffix of that semantic slot>. Writes slot_jobs.txt
+(prefix \t suffix \t target63) plus positive controls: named images whose name fits a template
+with a word of <= 6 chars, the word hidden."""
+import collections, glob, struct, sys
+sys.argv = ["x"]
+src = open("graph_rules.py", encoding="utf-8").read()
+exec(src[:src.index("def main():")])
+M63 = (1 << 63) - 1
+names = load_names()
+for l in open(r"gpu\all_new.csv", encoding="utf-8"):
+    n = l.rstrip("\n").split(",", 2)[2].rsplit(",", 1)[0]; names[fnv(n)] = n
+full = {}
+ids = show("snapshots/blkops04.ids")
+for off in range(26, len(ids) - 9, 10):
+    i, p = struct.unpack_from("<QH", ids, off)
+    if p == 9: full[i & M60] = i & M63
+triples = set()
+for f in glob.glob(r"C:\tmp\bo4mat\*.matimages.csv"):
+    for line in open(f):
+        m, slot, sem, img = line.strip().split(",")
+        if img != "0": triples.add((int(m, 16), int(sem, 16), int(img, 16)))
+def stems(mn):
+    s = mn
+    for d in DIRS:
+        if s.startswith(d): s = s[len(d):]; break
+    out = [s] + ([s[4:]] if s.startswith("mtl_") else [])
+    res = []
+    for b in out:
+        t = b.split("_")
+        for k in range(0, min(3, len(t) - 1) + 1): res.append("_".join(t[:len(t) - k]))
+    return res
+suf = collections.defaultdict(collections.Counter)
+for m, sem, img in triples:
+    if m in names and img in names:
+        im = names[img]
+        for st in stems(names[m]):
+            if im.startswith("i_" + st + "_"):
+                rest = im[len("i_" + st) + 1:]
+                tail = "_" + rest.rsplit("_", 1)[1] if "_" in rest else ""
+                suf[sem][tail] += 1; break
+SUF = {sem: [s for s, _ in c.most_common(3)] for sem, c in suf.items()}
+jobs = set(); targets = set(); ctrl = []
+for m, sem, img in triples:
+    if m not in names or img not in full: continue
+    sx = SUF.get(sem, [""]) + [""]
+    if img not in names:
+        targets.add(img)
+        for st in stems(names[m]):
+            for s in set(sx): jobs.add(("i_" + st + "_", s, full[img]))
+    elif len(ctrl) < 40:
+        im = names[img]
+        for st in stems(names[m]):
+            for s in sx:
+                if s and im.startswith("i_" + st + "_") and im.endswith(s):
+                    w = im[len("i_" + st) + 1:len(im) - len(s)]
+                    if 1 <= len(w) <= 6 and w.isalnum() and w.islower():
+                        ctrl.append(im); jobs.add(("i_" + st + "_", s, full[img])); break
+            else: continue
+            break
+print("unnamed images under named materials:", len(targets), "templates:", len(jobs),
+      "distinct prefixes:", len({j[0] for j in jobs}), "controls:", len(ctrl))
+open("slot_jobs.txt", "w", encoding="utf-8", newline="\n").write("".join("%s\t%s\t%x\n" % j for j in sorted(jobs)))
+open("slot_controls.txt", "w", encoding="utf-8", newline="\n").write("\n".join(ctrl) + "\n")
+print("suffixes per semantic:", list(SUF.items())[:8])
+
+# ===== slot_jobs_mat.py =====
+
+"""Graph-anchored letter slot for materials: each unnamed material referenced by a named xmodel,
+templates <learned pre><model stem cut k>_<WORD><learned suf> (shapes learned on known
+xmodel->material pairs). Writes slot_jobs_mat.txt and controls like slot_jobs.py."""
+import collections, struct, sys
+sys.argv = ["x"]
+src = open("graph_rules.py", encoding="utf-8").read()
+exec(src[:src.index("def main():")])
+M63 = (1 << 63) - 1
+names = load_names()
+for l in open(r"gpu\all_new.csv", encoding="utf-8"):
+    n = l.rstrip("\n").split(",", 2)[2].rsplit(",", 1)[0]; names[fnv(n)] = n
+full = {}
+ids = show("snapshots/blkops04.ids")
+for off in range(26, len(ids) - 9, 10):
+    i, p = struct.unpack_from("<QH", ids, off)
+    if p == 6: full[i & M60] = i & M63
+pairs = {(oh, th) for ot, oh, tt, th in edges() if ot == "xmodel" and tt == "material"}
+print("xmodel->material pairs", len(pairs))
+known = [(names[o], names[t]) for o, t in pairs if o in names and t in names]
+shapes = learn(known)
+pre_forms = collections.Counter()
+for (pre, stripped, k, suf), c in shapes.items():
+    pre_forms[(pre, stripped)] += c
+top = [p for p, c in pre_forms.most_common(6)]
+sufs = collections.Counter()
+for (pre, stripped, k, suf), c in shapes.items():
+    tail = "_" + suf.rsplit("_", 1)[1] if "_" in suf else ""
+    sufs[tail] += c
+SUF = [s for s, _ in sufs.most_common(4)]
+if "" not in SUF: SUF.append("")
+print("prefix forms", top, "suffixes", SUF)
+jobs = set(); targets = set(); ctrl = []
+for o, t in pairs:
+    if o not in names or t not in full: continue
+    cs = cores(names[o])
+    if t not in names:
+        targets.add(t)
+        for pre, stripped in top:
+            for core, st, kk in cs:
+                if st == stripped and len(core) >= 3:
+                    for s in SUF: jobs.add((pre + core + "_", s, full[t]))
+    elif len(ctrl) < 40:
+        tn = names[t]; hit = False
+        for pre, stripped in top:
+            for core, st, kk in cs:
+                if st != stripped or len(core) < 3: continue
+                for s in SUF:
+                    p = pre + core + "_"
+                    if tn.startswith(p) and tn.endswith(s) and len(tn) > len(p) + len(s):
+                        w = tn[len(p):len(tn) - len(s)] if s else tn[len(p):]
+                        if 1 <= len(w) <= 6 and w.isalnum() and w.islower():
+                            ctrl.append(tn); jobs.add((p, s, full[t])); hit = True; break
+                if hit: break
+            if hit: break
+print("unnamed materials under named xmodels:", len(targets), "templates:", len(jobs),
+      "prefixes:", len({j[0] for j in jobs}), "controls:", len(ctrl))
+open("slot_jobs_mat.txt", "w", encoding="utf-8", newline="\n").write("".join("%s\t%s\t%x\n" % j for j in sorted(jobs)))
+open("slot_controls_mat.txt", "w", encoding="utf-8", newline="\n").write("\n".join(ctrl) + "\n")
+
+# ===== slot.cu =====
+
+// slot - graph-anchored letter slot: per prefix, every word of 1..5 chars over [a-z0-9] and of 6
+// chars over [a-z], followed by each of that prefix's suffixes, against that prefix's own targets
+// (63-bit ids; both values of bit 63 tried by walking the suffix backwards).
+// usage: slot <jobs: prefix \t suffix \t target63hex> [first_group] [n_groups]    out: prefix word suffix
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <algorithm>
+#include <fstream>
+#include <map>
+#include <string>
+#include <vector>
+#define P 0x100000001B3ULL
+#define PI 0xCE965057AFF6957BULL
+static uint64_t fwd(uint64_t h, const std::string& s) { for (unsigned char c : s) h = (h ^ c) * P; return h; }
+static uint64_t bwd(uint64_t h, const std::string& s) { for (size_t i = s.size(); i-- > 0;) h = (h * PI) ^ (unsigned char)s[i]; return h; }
+__constant__ char AL[36] = {'a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z','0','1','2','3','4','5','6','7','8','9'};
+__global__ void k(uint64_t hp, int L, int base, uint64_t count, const uint64_t* B, int nB, unsigned long long* out, unsigned* nout)
+{
+    uint64_t w = blockIdx.x * (uint64_t)blockDim.x + threadIdx.x;
+    if (w >= count) return;
+    uint64_t h = hp, x = w;
+    for (int i = 0; i < L; ++i) { h = (h ^ (uint8_t)AL[x % base]) * P; x /= base; }
+    int lo = 0, hi = nB;
+    while (lo < hi) { int m = (lo + hi) >> 1; if (B[m] < h) lo = m + 1; else hi = m; }
+    if (lo < nB && B[lo] == h) { unsigned q = atomicAdd(nout, 1); if (q < 4096) { out[2 * q] = w; out[2 * q + 1] = L; } }
+}
+int main(int argc, char** argv)
+{
+    std::map<std::string, std::vector<std::pair<std::string, uint64_t>>> G;
+    { std::ifstream f(argv[1]); std::string l; while (std::getline(f, l)) { size_t a = l.find('\t'), b = l.find('\t', a + 1); if (b == std::string::npos) continue;
+        G[l.substr(0, a)].push_back({l.substr(a + 1, b - a - 1), strtoull(l.c_str() + b + 1, 0, 16)}); } }
+    size_t first = argc > 2 ? atol(argv[2]) : 0, n = argc > 3 ? atol(argv[3]) : G.size();
+    uint64_t *dB; unsigned long long* dout; unsigned* dn;
+    cudaMalloc(&dB, 8 * 4096); cudaMalloc(&dout, 16 * 4096); cudaMalloc(&dn, 4);
+    size_t gi = 0, done = 0;
+    for (auto& [pre, lst] : G) {
+        if (gi++ < first) continue; if (done++ >= n) break;
+        // back-states: for each suffix, the state just before it, both values of bit 63
+        std::vector<uint64_t> B; std::vector<std::string> sfx;
+        for (auto& [s, t] : lst) for (uint64_t hi = 0; hi < 2; ++hi) { B.push_back(bwd(t | (hi << 63), s)); sfx.push_back(s); }
+        std::vector<size_t> ord(B.size()); for (size_t i = 0; i < ord.size(); ++i) ord[i] = i;
+        std::sort(ord.begin(), ord.end(), [&](size_t a, size_t b) { return B[a] < B[b]; });
+        std::vector<uint64_t> Bs; std::vector<std::string> Ss; for (size_t i : ord) { Bs.push_back(B[i]); Ss.push_back(sfx[i]); }
+        if (Bs.size() > 4096) Bs.resize(4096);
+        cudaMemcpy(dB, Bs.data(), 8 * Bs.size(), cudaMemcpyHostToDevice);
+        const uint64_t hp = fwd(0xCBF29CE484222325ULL, pre);
+        for (int L = 1; L <= 6; ++L) {
+            int base = L <= 5 ? 36 : 26; uint64_t count = 1; for (int i = 0; i < L; ++i) count *= base;
+            cudaMemset(dn, 0, 4);
+            k<<<(unsigned)((count + 255) / 256), 256>>>(hp, L, base, count, dB, (int)Bs.size(), dout, dn);
+            unsigned nh; cudaMemcpy(&nh, dn, 4, cudaMemcpyDeviceToHost); nh = std::min(nh, 4096u);
+            std::vector<unsigned long long> o(2 * nh); cudaMemcpy(o.data(), dout, 16 * nh, cudaMemcpyDeviceToHost);
+            for (unsigned i = 0; i < nh; ++i) {
+                uint64_t x = o[2 * i]; std::string w; for (int j = 0; j < L; ++j) { w += "abcdefghijklmnopqrstuvwxyz0123456789"[x % base]; x /= base; }
+                uint64_t h = fwd(hp, w);
+                for (size_t q = 0; q < Bs.size(); ++q) if (Bs[q] == h) printf("%s%s%s\n", pre.c_str(), w.c_str(), Ss[q].c_str());
+            }
+        }
+        if (done % 500 == 0) { fprintf(stderr, "%zu groups\n", done); fflush(stdout); }
+    }
+    return 0;
+}
