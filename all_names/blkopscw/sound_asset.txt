@@ -1856,6 +1856,8 @@ fa0fcfe44d29540,zmb/ai/tormentor/vox/ambient/ambient_08.rn75.pc.all.snd
 69a5ac01575778e3,zmb/ai/werewolf/vox/pain_2.0/wwolf_pain_05.rn75.pc.all.snd
 7c42a983d69114c2,zmb/ai/werewolf/vox/pain_2.0/wwolf_pain_06.rn75.pc.all.snd
 fcd135253ece34,zmb/armor/armor_break_swt.ln75.pc.all.snd
+6cd6e236fe02a9d2,zmb/level/zm_silver/quest/main/aetherbomb/explo_base/explo_base_00.ln75.pc.all.snd
+7c3a90f74aced744,zmb/level/zm_silver/quest/main/aetherbomb/explo_base/explo_base_00.rn75.pc.all.snd
 6f199b8d8377674b,zmb/level/zm_zodt8/sidequest/engineer/lever_finish.ln75.pc.all.snd
 539580b1b81ed5e6,zmb/machines/ammochest/ammo_close.rn75.pc.all.snd
 514dd6ce549b8e91,zmb/vapors/elementalpop/activate_npc/activate_00.ln75.pc.all.snd
