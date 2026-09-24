@@ -1,0 +1,4 @@
+9eafb4574452a2,mc/mtl_attach_t9_lmg_light_mag_decal_gladia
+3173f0ffb94ef07a,mc/mtl_attach_t9_loot_sniper_cannon_handguard_rave
+450d757da684b20c,mc/mtl_attach_t9_lmg_accurate_cb_grip_scrap
+572436ad7dc55acc,mc/mtl_wpn_t9_smg_heavy_rearsight_arabian
