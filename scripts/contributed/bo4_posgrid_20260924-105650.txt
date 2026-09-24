@@ -1,0 +1,105 @@
+# Positional grids: known names grouped by (first two tokens, token count), tokens seen at each
+# position crossed, numbered tokens extended to max+10. 4.8e10 candidates for 2 names: the xanim
+# families are exhausted by recombination, what is left needs new words.
+
+# ===== posgrid_gen.py =====
+
+"""Positional grids for a pool: known names grouped by (first two tokens, token count); each group's
+grid = the set of tokens seen at each position. Writes posgrid_<pool>.txt (one group per line,
+positions separated by tab, tokens by space) and the pool's unnamed 63-bit ids."""
+import collections, struct, sys
+sys.argv = ["x"]
+src = open("graph_rules.py", encoding="utf-8").read()
+exec(src[:src.index("def main():")])
+POOLID = {"xanim": 3, "xmodel": 4, "image": 9, "material": 6}
+pool = sys.orig_argv[-2] if len(sys.orig_argv) > 2 else "xanim"
+cap = float(sys.orig_argv[-1]) if len(sys.orig_argv) > 3 else 5e9
+names = load_names()
+for l in open(r"gpu\all_new.csv", encoding="utf-8"):
+    n = l.rstrip("\n").split(",", 2)[2].rsplit(",", 1)[0]; names[fnv(n)] = n
+ids = show("snapshots/blkops04.ids"); ps = {}
+for off in range(26, len(ids) - 9, 10):
+    i, p = struct.unpack_from("<QH", ids, off)
+    if p == POOLID[pool]: ps[i & M60] = i & ((1 << 63) - 1)
+known = [names[h] for h in ps if h in names]
+unnamed = [ps[h] for h in ps if h not in names]
+groups = collections.defaultdict(list)
+for n in known:
+    t = n.split("_")
+    if len(t) >= 3: groups[("_".join(t[:2]), len(t))].append(t)
+rows = []; total = 0
+for (fam, L), lst in groups.items():
+    pos = [sorted({t[i] for t in lst}) for i in range(L)]
+    size = 1
+    for p in pos: size *= len(p)
+    if len(lst) < 3 or size > cap: continue
+    rows.append((size, fam, pos)); total += size
+rows.sort(key=lambda r: r[0])
+print(pool, "known", len(known), "unnamed", len(unnamed), "groups kept", len(rows), "total candidates %.2e" % total)
+for size, fam, pos in rows[-8:]: print("  %.1e %s %s" % (size, fam, [len(p) for p in pos]))
+with open("posgrid_%s.txt" % pool, "w", newline="\n") as fh:
+    for size, fam, pos in rows: fh.write("\t".join(" ".join(p) for p in pos) + "\n")
+open("posgrid_%s_targets.txt" % pool, "w", newline="\n").write("\n".join("%x" % u for u in unnamed) + "\n")
+
+# ===== posgrid.cpp =====
+
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <vector>
+static const uint64_t P = 0x100000001B3ULL, O = 0xCBF29CE484222325ULL, M63 = 0x7FFFFFFFFFFFFFFFULL;
+// posgrid - full cross product of per-position token lists (one group per line: positions split by
+// tab, tokens by space, joined with '_'), each name checked against 63-bit FNV-1a targets.
+// usage: posgrid <grids> <targets> <threads>    out: id name
+static std::vector<std::string> split(const std::string& s, char d) { std::vector<std::string> v; size_t a = 0; for (;;) { size_t b = s.find(d, a); v.push_back(s.substr(a, b == std::string::npos ? b : b - a)); if (b == std::string::npos) break; a = b + 1; } return v; }
+typedef std::vector<std::vector<std::string>> Grid;
+static std::vector<uint64_t> T;
+static std::mutex out;
+static void walk(const Grid& g, size_t i, uint64_t h, std::vector<int>& pick) {
+    if (i + 1 == g.size()) {
+        for (size_t k = 0; k < g[i].size(); ++k) {
+            uint64_t x = h; for (unsigned char c : g[i][k]) x = (x ^ c) * P;
+            x &= M63;
+            if (std::binary_search(T.begin(), T.end(), x)) {
+                std::string n; for (size_t j = 0; j < i; ++j) n += g[j][pick[j]] + "_"; n += g[i][k];
+                std::lock_guard<std::mutex> l(out); printf("%016llx %s\n", (unsigned long long)x, n.c_str());
+            }
+        }
+        return;
+    }
+    for (size_t k = 0; k < g[i].size(); ++k) {
+        uint64_t x = h; for (unsigned char c : g[i][k]) x = (x ^ c) * P;
+        x = (x ^ '_') * P; pick[i] = (int)k; walk(g, i + 1, x, pick);
+    }
+}
+int main(int argc, char** argv) {
+    if (argc < 4) { fprintf(stderr, "posgrid <grids> <targets> <threads>\n"); return 1; }
+    std::vector<Grid> G; std::string l;
+    { std::ifstream f(argv[1]); while (std::getline(f, l)) { if (!l.empty() && l.back() == '\r') l.pop_back(); if (l.empty()) continue; Grid g; for (auto& p : split(l, '\t')) g.push_back(split(p, ' ')); G.push_back(g); } }
+    { std::ifstream f(argv[2]); while (std::getline(f, l)) if (!l.empty()) T.push_back(strtoull(l.c_str(), 0, 16) & M63); }
+    std::sort(T.begin(), T.end());
+    // one job per (group, token at the first varying position), so big groups spread over threads
+    struct Job { size_t g; size_t split; size_t k; };
+    std::vector<Job> jobs;
+    for (size_t gi = 0; gi < G.size(); ++gi) {
+        size_t s = 0; while (s + 1 < G[gi].size() && G[gi][s].size() == 1) ++s;
+        for (size_t k = 0; k < G[gi][s].size(); ++k) jobs.push_back({gi, s, k});
+    }
+    fprintf(stderr, "groups %zu jobs %zu targets %zu\n", G.size(), jobs.size(), T.size());
+    std::atomic<size_t> next{0};
+    auto work = [&]() {
+        for (size_t n = next++; n < jobs.size(); n = next++) {
+            Grid g = G[jobs[n].g]; g[jobs[n].split] = {g[jobs[n].split][jobs[n].k]};
+            std::vector<int> pick(g.size(), 0); walk(g, 0, O, pick);
+        }
+    };
+    int nt = atoi(argv[3]); std::vector<std::thread> th; for (int i = 0; i < nt; ++i) th.emplace_back(work); for (auto& t : th) t.join();
+    fflush(stdout);
+    return 0;
+}
