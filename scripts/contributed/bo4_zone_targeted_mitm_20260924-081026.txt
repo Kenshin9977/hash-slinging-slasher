@@ -1,0 +1,120 @@
+# Targeted meet-in-the-middle: for each named owner -> unnamed target edge, prefix = learned shape + owner stem, suffix = learned suffix, 1-2 vocabulary tokens met in the middle against that edge's own target only
+#
+# Inputs come from reading every Black Ops 4 zone (the .ff with its .fd patch applied) with the
+# Greyhoundx zone walker (github.com/Kenshin9977/Greyhoundx, `bo4-disk-export --type refs|matimages|strings`):
+# per zone, every asset's position and every pointer between assets, each material's image table with
+# its semantic slot, and the zone's decrypted strings. Names are then derived along those edges from
+# names already known to be real. Every candidate was re-checked at 63 bits before being filed.
+
+
+# ===== tmitm_jobs.py =====
+
+"""Jobs for tmitm: every (named owner -> unnamed target) edge of the tracked pools (pointer refs and
+by-value holders), prefix = learned shape's pre + owner core + "_", suffix = learned suffix. Plus the
+vocabulary: tokens of every known name and of the decrypted zone strings."""
+import collections, glob, re, sys
+sys.argv = ["x"]
+src = open("graph_rules.py", encoding="utf-8").read()
+exec(src[:src.index("def main():")])
+names = load_names()
+for f in ("alias_rules_found.txt", "alias_rules2_found.txt"):
+    pass
+todo = unnamed_targets(names)
+tpool = {i: t for t, s in todo.items() for i in s}
+E = edges()
+for line in open("byvalue.tsv"):
+    tp, tid, ot, oh, off, z = line.rstrip("\n").split("\t")
+    E.add((ot, int(oh, 16), tp, int(tid, 16)))
+by_pair = collections.defaultdict(list)
+for ot, oh, tt, th in E:
+    by_pair[(ot, tt)].append((oh, th))
+jobs = collections.defaultdict(set)
+for (ot, tt), lst in by_pair.items():
+    if tt not in POOL:
+        continue
+    known = [(names[o], names[t]) for o, t in lst if o in names and t in names]
+    shapes = learn(known)
+    top = [s for s, c in shapes.most_common(8) if c >= 3]
+    if not top:
+        top = [("", False, 0, "")]      # no evidence: owner core + tokens
+    for o, t in lst:
+        if t not in todo[tt] or o not in names:
+            continue
+        for pre, stripped, k, suf in top:
+            for core, st, kk in cores(names[o]):
+                if st == stripped and kk <= k + 1 and len(core) >= 3:
+                    jobs[(pre + core + "_", suf)].add(t)
+print("edge pairs", len(by_pair), "jobs", len(jobs), "targets", len(set().union(*jobs.values())))
+with open("tmitm_jobs.txt", "w", encoding="utf-8") as fh:
+    for (p, s), ts in jobs.items():
+        if "\t" in p or "\t" in s: continue
+        fh.write("%s\t%s\t60\t%s\n" % (p, s, ",".join("%x" % t for t in sorted(ts))))
+tok = re.compile(r"[a-z0-9]+")
+V = collections.Counter()
+for n in names.values():
+    V.update(tok.findall(n.lower()))
+for f in glob.glob(r"C:\tmp\bo4str_all\*.strings.txt"):
+    for line in open(f, encoding="utf-8", errors="replace"):
+        V.update(tok.findall(line.partition("\t")[2].lower()))
+voc = [t for t, c in V.most_common() if c >= 2 and len(t) <= 24][:40000]
+open("tmitm_vocab.txt", "w").write("\n".join(voc) + "\n")
+print("vocab", len(voc))
+
+# ===== tmitm.cpp =====
+
+#include <algorithm>
+#include <atomic>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <fstream>
+#include <mutex>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+// tmitm - per job, names = prefix + T + suffix with T = "a" or "a_b" from the vocabulary, checked
+// against that job's own targets (FNV-1a 64 masked to maskbits; every high-bit variant tried).
+// jobs: prefix \t suffix \t maskbits \t target,target,...    out: id name
+static const uint64_t P = 0x100000001B3ULL, PI = 0xCE965057AFF6957BULL, O = 0xCBF29CE484222325ULL;
+static inline uint64_t fwd(uint64_t h, const std::string& s) { for (unsigned char c : s) h = (h ^ c) * P; return h; }
+static inline uint64_t bwd(uint64_t h, const std::string& s) { for (size_t i = s.size(); i-- > 0;) h = (h * PI) ^ (unsigned char)s[i]; return h; }
+static std::vector<std::string> split(const std::string& s, char d) { std::vector<std::string> v; size_t a = 0; for (;;) { size_t b = s.find(d, a); v.push_back(s.substr(a, b == std::string::npos ? b : b - a)); if (b == std::string::npos) break; a = b + 1; } return v; }
+struct Job { std::string pre, suf; int bits; std::vector<uint64_t> t; };
+int main(int argc, char** argv) {
+    if (argc < 4) { fprintf(stderr, "tmitm <jobs> <vocab> <threads>\n"); return 1; }
+    std::vector<Job> jobs; std::vector<std::string> V;
+    { std::ifstream f(argv[1]); std::string l; while (std::getline(f, l)) { if (!l.empty() && l.back() == '\r') l.pop_back(); auto c = split(l, '\t'); if (c.size() < 4) continue; Job j{c[0], c[1], atoi(c[2].c_str()), {}}; for (auto& x : split(c[3], ',')) if (!x.empty()) j.t.push_back(strtoull(x.c_str(), 0, 16)); jobs.push_back(j); } }
+    { std::ifstream f(argv[2]); std::string l; while (std::getline(f, l)) { if (!l.empty() && l.back() == '\r') l.pop_back(); if (!l.empty()) V.push_back(l); } }
+    fprintf(stderr, "jobs %zu vocab %zu\n", jobs.size(), V.size());
+    std::atomic<size_t> next{0}, done{0}; std::mutex out;
+    auto work = [&]() {
+        std::unordered_map<uint64_t, uint32_t> F1u; F1u.reserve(V.size() * 2);
+        for (size_t n = next++; n < jobs.size(); n = next++) {
+            const Job& j = jobs[n];
+            const uint64_t mask = j.bits >= 64 ? ~0ULL : ((1ULL << j.bits) - 1);
+            const int free = j.bits >= 64 ? 0 : 64 - j.bits;
+            const uint64_t hp = fwd(O, j.pre);
+            F1u.clear();
+            for (uint32_t i = 0; i < V.size(); ++i) {
+                uint64_t h = fwd(hp, V[i]);
+                uint64_t e = fwd(h, j.suf) & mask;
+                for (uint64_t t : j.t) if (e == t) { std::lock_guard<std::mutex> g(out); printf("%016llx %s%s%s\n", (unsigned long long)t, j.pre.c_str(), V[i].c_str(), j.suf.c_str()); }
+                F1u[(h ^ '_') * P] = i;
+            }
+            for (uint64_t t : j.t)
+                for (uint64_t hi = 0; hi < (1ULL << free); ++hi) {
+                    const uint64_t b = bwd(free ? (t | (hi << j.bits)) : t, j.suf);
+                    for (uint32_t k = 0; k < V.size(); ++k) {
+                        auto it = F1u.find(bwd(b, V[k]));
+                        if (it == F1u.end()) continue;
+                        std::string nm = j.pre + V[it->second] + "_" + V[k] + j.suf;
+                        if ((fwd(O, nm) & mask) == t) { std::lock_guard<std::mutex> g(out); printf("%016llx %s\n", (unsigned long long)t, nm.c_str()); }
+                    }
+                }
+            size_t d = ++done; if (d % 5000 == 0) { std::lock_guard<std::mutex> g(out); fprintf(stderr, "%zu/%zu\n", d, jobs.size()); fflush(stdout); }
+        }
+    };
+    int nt = atoi(argv[3]); std::vector<std::thread> T; for (int i = 0; i < nt; ++i) T.emplace_back(work); for (auto& t : T) t.join();
+    return 0;
+}
