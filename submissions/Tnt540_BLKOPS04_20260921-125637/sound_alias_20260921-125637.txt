@@ -1,0 +1,5 @@
+10e887d95fef1678,vox_gauntlet_mouth_orac_0
+13ae4ec246717759,vox_interact_sandals_orac_0
+48e9f010df79bf6b,vox_interact_automaton_orac_0
+51230e1015ce6b0e,vox_gauntlet_workbench_orac_0
+52a64fc5bd53424a,vox_seal_aether_apot_0
