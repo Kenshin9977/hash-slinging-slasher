@@ -1,0 +1,94 @@
+# Plaintext outside the zone string tables: every printable run of every patched BO4 zone (Greyhoundx
+# zone reader), cut into pieces and path stems, hashed against every unnamed id of the snapshot.
+# 32.5M distinct pieces over 16 GB; 2,422 exact 63-bit hits, none in image/material/xmodel/xanim/sound.
+
+# ===== plain_scan.py =====
+
+"""Plaintext outside the string table: every printable run in every patched zone, cut into
+candidates (whole run, separator-delimited pieces, path stems), hashed against every unnamed id of
+the snapshot. Also collects words absent from the known names and the zone string tables."""
+import collections, glob, os, re, struct, sys, time
+sys.argv = ["x"]
+src = open("graph_rules.py", encoding="utf-8").read()
+exec(src[:src.index("def main():")])
+RUN = re.compile(rb"[A-Za-z0-9_/\.\-:, =\"'()\[\]{}+*#@$%&|<>;!?~^`]{4,300}")
+PIECE = re.compile(r"[a-z0-9_/\.\-]{3,200}")
+
+
+def candidates(run):
+    s = run.decode("ascii").lower()
+    out = {s}
+    for p in PIECE.findall(s):
+        out.add(p)
+        stem = p.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        out.add(stem); out.add(stem.split(".", 1)[0]); out.add(p.split(".", 1)[0])
+    return out
+
+
+def main():
+    only = os.environ.get("PS_ZONE")
+    zs = [r"C:\tmp\bo4\zones_patched\%s.bin" % only] if only else sorted(glob.glob(r"C:\tmp\bo4\zones_patched\*.bin"))
+    t0 = time.time(); seen = set()
+    for i, z in enumerate(zs):
+        buf = open(z, "rb").read()
+        for m in RUN.findall(buf):
+            seen.update(candidates(m))
+        if i % 50 == 0 or only:
+            print("zone %d/%d %.0fs distinct %d" % (i + 1, len(zs), time.time() - t0, len(seen)), file=sys.stderr, flush=True)
+    with open(os.environ.get("PS_OUT", "plain_strings.txt"), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("\n".join(sorted(seen)) + "\n")
+
+
+main()
+
+# ===== plain_check.py =====
+
+"""Hash every plaintext piece (plain_strings.txt) against every unnamed id of the snapshot, all
+pools, 63-bit exact; and count identifier-like words no known name or zone string contains."""
+import collections, glob, re, struct, sys, time
+sys.argv = ["x"]
+src = open("graph_rules.py", encoding="utf-8").read()
+exec(src[:src.index("def main():")])
+M63 = (1 << 63) - 1
+t0 = time.time()
+names = load_names()
+for l in open(r"gpu\all_new.csv", encoding="utf-8"):
+    names[fnv(l.rstrip("\n").split(",", 2)[2].rsplit(",", 1)[0])] = 1
+pools = {}
+ids = show("snapshots/blkops04.ids")
+for off in range(26, len(ids) - 9, 10):
+    i, p = struct.unpack_from("<QH", ids, off)
+    if (i & M60) not in names: pools[i & M63] = p
+pn = {}
+for line in show("snapshots/blkops04.pools.txt").decode("utf-8", "replace").splitlines():
+    parts = line.replace(",", " ").split()
+    if len(parts) >= 2 and parts[0].isdigit(): pn[int(parts[0])] = parts[1]
+print("unnamed ids, all pools:", len(pools), "%.0fs" % (time.time() - t0), flush=True)
+hits = {}
+n = 0
+for s in open("plain_strings.txt", encoding="utf-8"):
+    s = s.rstrip("\n"); n += 1
+    h = 0xCBF29CE484222325
+    for c in s.encode():
+        h = ((h ^ c) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    if (h & M63) in pools: hits[h & M63] = s
+print("pieces hashed", n, "direct hits", len(hits), "%.0fs" % (time.time() - t0), flush=True)
+c = collections.Counter(pn.get(pools[h], str(pools[h])) for h in hits)
+print("hits per pool:", c.most_common(30))
+with open("plain_hits.txt", "w", encoding="utf-8", newline="\n") as fh:
+    for h, s in sorted(hits.items(), key=lambda kv: (pools[kv[0]], kv[1])):
+        fh.write("%x,%s,%s\n" % (h, pn.get(pools[h], pools[h]), s))
+V = set()
+for v in list(names.values()):
+    if isinstance(v, str): V.update(re.split(r"[_/\.]", v))
+for f in glob.glob(r"C:\tmp\bo4str_all\*.strings.txt"):
+    for line in open(f, encoding="utf-8", errors="replace"):
+        V.update(re.split(r"[_/\.\s]", line.partition("\t")[2].lower()))
+W = collections.Counter()
+for s in open("plain_strings.txt", encoding="utf-8"):
+    s = s.rstrip("\n")
+    if "_" in s and re.fullmatch(r"[a-z][a-z0-9_]{5,80}", s):
+        for t in s.split("_"):
+            if len(t) >= 3 and t.isalpha() and t not in V: W[t] += 1
+print("identifier-like new words:", len(W), W.most_common(60))
+open("plain_newwords.txt", "w", newline="\n").write("\n".join("%s\t%d" % kv for kv in W.most_common()) + "\n")

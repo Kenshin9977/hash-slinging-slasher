@@ -1,0 +1,2 @@
+Fragment meet-in-the-middle (codehash mitm_frag, RTX 3090), four round 5: the same, plus the 2,422 plaintext hits as corpus/boost and ~1,200 new plaintext words as
+prior (bo4_zone_plaintext): 264 matches, 91 new, all exact at 63 bits.
