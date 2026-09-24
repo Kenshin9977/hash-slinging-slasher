@@ -1,0 +1,11 @@
+Fragment meet-in-the-middle (codehash mitm_frag, RTX 3090), four rounds fed back into each other.
+corpus  : every name whose hash is in snapshots/blkops04.ids (published tables + findings + this batch)
+prior   : every other name in cod-name-db, plus the ~88k decrypted strings of every BO4 zone
+          (vocabulary and continuations only, never a prefix or suffix)
+boost   : the names recovered from the zone graph (the other files of this batch)
+
+  python build_fragments.py known_bo4.csv new.csv --out-dir frag --prior prior.txt zonestrings.txt          --boost new.csv --deep-top 2000
+  mitm_frag --prefixes frag/prefixes.txt --suffixes frag/suffixes.txt --targets targets.txt          --extend frag/words.txt --cont-offset frag/cont_offset.bin --cont-index frag/cont_index.bin
+
+rounds (60-bit search, then every hit re-checked at 63 bits): 3040, 1065, 648, 119 new.
+The 63-bit re-check rejected 19 gibberish recombinations and 2 more were dropped by pool/shape.

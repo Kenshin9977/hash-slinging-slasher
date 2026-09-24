@@ -1,0 +1,248 @@
+# sound_alias -> sound_asset links read from the zones' sound banks (alias hash at +0, its file id at +72/+40), then the file path learned from pairs where both names are known and applied to the rest
+#
+# Inputs come from reading every Black Ops 4 zone (the .ff with its .fd patch applied) with the
+# Greyhoundx zone walker (github.com/Kenshin9977/Greyhoundx, `bo4-disk-export --type refs|matimages|strings`):
+# per zone, every asset's position and every pointer between assets, each material's image table with
+# its semantic slot, and the zone's decrypted strings. Names are then derived along those edges from
+# names already known to be real. Every candidate was re-checked at 63 bits before being filed.
+
+
+# ===== sound_links.py =====
+
+"""sound_alias -> sound_asset links from every zone's `sound` assets (the banks): where known alias
+ids (pool 171) and file ids (pool 170) sit in the bank bytes, the constant offset between an
+alias hash and its file id, then every link it gives. Out: all_zones_alias_to_fileid.json
+({unnamed file id hex: alias name}, the input alias_targeted.py takes)."""
+import bisect
+import collections
+import glob
+import json
+import mmap
+import os
+import struct
+import subprocess
+
+import numpy as np
+
+REPO = r"C:\tmp\hash-slinging-slasher"
+M63 = (1 << 63) - 1
+
+
+def show(path):
+    return subprocess.run(["git", "-C", REPO, "show", "origin/main:" + path], capture_output=True).stdout
+
+
+ids = show("snapshots/blkops04.ids")
+files, aliases = set(), set()
+for off in range(26, len(ids) - 9, 10):
+    i, p = struct.unpack_from("<QH", ids, off)
+    if p == 170:
+        files.add(i & M63)
+    elif p == 171:
+        aliases.add(i & M63)
+names = {}
+for f in ("sound_asset", "sound_alias"):
+    for line in show("all_names/blkops04/%s.txt" % f).decode("utf-8", "replace").splitlines():
+        k, _, v = line.partition(",")
+        try:
+            names[int(k, 16) & M63] = v.strip()
+        except ValueError:
+            pass
+for f in glob.glob(r"C:\tmp\echo_db\fnv1a_xsounds*.csv") + glob.glob(r"C:\tmp\echo_db\all\fnv1a_soundbanks_aliases*.csv") + glob.glob(r"C:\tmp\echo_db\fnv1a_soundbanks_aliases*.csv"):
+    for line in open(f, encoding="utf-8", errors="replace"):
+        k, _, v = line.partition(",")
+        try:
+            names.setdefault(int(k, 16) & M63, v.strip())
+        except ValueError:
+            pass
+print("pool 170 files", len(files), "unnamed", sum(1 for i in files if i not in names),
+      "| pool 171 aliases", len(aliases), "named", sum(1 for i in aliases if i in names))
+
+farr = np.array(sorted(files), dtype=np.uint64)
+aarr = np.array(sorted(aliases), dtype=np.uint64)
+m63 = np.uint64(M63)
+deltas = collections.Counter()
+occ = []     # (zone, bank pos, alias positions, file positions)
+for rp in glob.glob(r"C:\tmp\bo4refs\*.roots.csv"):
+    z = os.path.basename(rp)[:-len(".roots.csv")]
+    roots = sorted((int(l.split(",")[1], 16), l.split(",")[0]) for l in open(rp) if l.strip())
+    banks = [(p, roots[i + 1][0] if i + 1 < len(roots) else None) for i, (p, t) in enumerate(roots) if t == "sound"]
+    if not banks:
+        continue
+    with open(r"C:\tmp\bo4\zones_patched\%s.bin" % z, "rb") as fh:
+        buf = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+        for lo, hi in banks:
+            hi = hi or len(buf)
+            chunk = buf[lo:hi]
+            apos, fpos = {}, {}
+            for a in range(8):
+                cnt = (len(chunk) - a) // 8
+                if cnt <= 0:
+                    continue
+                v = np.frombuffer(chunk, dtype="<u8", count=cnt, offset=a) & m63
+                for k in np.nonzero(np.isin(v, aarr))[0].tolist():
+                    apos[a + 8 * k] = int(v[k])
+                for k in np.nonzero(np.isin(v, farr))[0].tolist():
+                    fpos[a + 8 * k] = int(v[k])
+            occ.append((z, lo, apos, fpos))
+            fs = sorted(fpos)
+            for ap in apos:
+                i = bisect.bisect_left(fs, ap - 256)
+                while i < len(fs) and fs[i] <= ap + 256:
+                    deltas[fs[i] - ap] += 1
+                    i += 1
+        buf.close()
+print("banks scanned", len(occ), "; most common alias->file offsets", deltas.most_common(8))
+best = [d for d, _ in deltas.most_common(3)]
+links = collections.defaultdict(set)
+for z, lo, apos, fpos in occ:
+    for ap, a in apos.items():
+        for d in best:
+            f = fpos.get(ap + d)
+            if f is not None:
+                links[f].add(a)
+print("files linked", len(links), "of", len(files))
+out = {}
+for f, al in links.items():
+    if f in names:
+        continue
+    named = [names[a] for a in al if a in names]
+    if named:
+        out["%x" % f] = sorted(named)[0]
+print("unnamed files with a named alias:", len(out))
+prev = json.load(open(r"C:\tmp\bo4_vox\w28447_alias_to_fileid.json"))
+print("  of which not in the w28447 link set:", sum(1 for k in out if k not in prev and k.lstrip("0") not in prev))
+json.dump(out, open(r"C:\tmp\zkprobe\all_zones_alias_to_fileid.json", "w"), indent=0)
+
+# ===== alias_rules.py =====
+
+"""Learn how a sound file path derives from its alias name on pairs where both are named (links from
+the zone banks), then apply the learned shapes to unnamed files whose alias is named."""
+import collections, json, re, sys
+sys.argv = ["x"]
+src = open("sound_links.py", encoding="utf-8").read()
+exec(src[:src.index("farr = np.array")])
+B = chr(92)
+def fnv63(s):
+    h = 0xCBF29CE484222325
+    for c in s.encode("utf-8", "surrogateescape"):
+        h = ((h ^ c) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h & M63
+# rebuild all links (alias, file) cheaply from the saved json is not enough: redo from scratch
+exec(src[src.index("farr = np.array"):src.index("out = {}")])
+pairs = []
+for f, al in links.items():
+    if f in names:
+        for a in al:
+            if a in names: pairs.append((names[a], names[f]))
+print("named pairs", len(pairs))
+# shape: file = dir + stem + tail, where stem = alias with k tokens cut (or alias itself inside)
+def shape(a, fpath):
+    d, _, base = fpath.rpartition(B)
+    toks = a.split("_")
+    for k in range(0, min(3, len(toks) - 1) + 1):
+        core = "_".join(toks[:len(toks) - k])
+        i = base.find(core)
+        if i >= 0:
+            return (d, base[:i], k, base[i + len(core):])
+    return None
+S = collections.Counter(); per_prefix = collections.defaultdict(collections.Counter)
+for a, f in pairs:
+    s = shape(a, f)
+    if s:
+        S[s] += 1
+        per_prefix["_".join(a.split("_")[:2])][s] += 1
+print("pairs with a shape", sum(S.values()), "distinct shapes", len(S))
+for s, c in S.most_common(15): print(c, s)
+todo = collections.defaultdict(set)
+for f, al in links.items():
+    if f not in names:
+        for a in al:
+            if a in names: todo[f].add(names[a])
+print("targets", len(todo))
+# candidate shapes per target: shapes of the same alias prefix first, then global top 3000
+glob_top = [s for s, _ in S.most_common(3000)]
+found = {}
+for f, als in todo.items():
+    for a in als:
+        pre = "_".join(a.split("_")[:2])
+        cand = [s for s, _ in per_prefix[pre].most_common(400)] + glob_top
+        toks = a.split("_")
+        done = False
+        for d, p, k, t in cand:
+            if k > len(toks) - 1: continue
+            core = "_".join(toks[:len(toks) - k])
+            n = (d + B if d else "") + p + core + t
+            if fnv63(n) == f:
+                found[f] = n; done = True; break
+        if done: break
+print("found", len(found))
+open("alias_rules_found.txt", "w", encoding="utf-8").write("\n".join("%x,%s" % kv for kv in sorted(found.items())) + "\n")
+for n in list(found.values())[:15]: print("  ", n)
+
+# ===== alias_rules2.py =====
+
+"""alias_rules.py with the directory generalized: alias tokens appearing as dir segments become
+slots ({1} = 2nd alias token, ...), so a shape learned on one speaker applies to every speaker."""
+import collections, re, sys
+sys.argv = ["x"]
+src = open("alias_rules.py", encoding="utf-8").read()
+exec(src[:src.index("# shape: file")])
+def gshape(a, fpath):
+    d, _, base = fpath.rpartition(B)
+    toks = a.split("_")
+    segs = d.split(B) if d else []
+    gsegs = []
+    for s in segs:
+        if s in toks[:4]: gsegs.append("{%d}" % toks.index(s))
+        elif any(t.startswith(s) and len(s) >= 3 for t in toks[:4]):
+            j = next(i for i, t in enumerate(toks[:4]) if t.startswith(s)); gsegs.append("{%d:%d}" % (j, len(s)))
+        else: gsegs.append(s)
+    for k in range(0, min(3, len(toks) - 1) + 1):
+        core = "_".join(toks[:len(toks) - k])
+        i = base.find(core)
+        if i >= 0:
+            return (tuple(gsegs), base[:i], k, base[i + len(core):])
+    return None
+def render(g, a):
+    toks = a.split("_"); out = []
+    for s in g:
+        m = re.fullmatch(r"\{(\d+)(?::(\d+))?\}", s)
+        if m:
+            j = int(m.group(1))
+            if j >= len(toks): return None
+            out.append(toks[j][:int(m.group(2))] if m.group(2) else toks[j])
+        else: out.append(s)
+    return B.join(out)
+S = collections.Counter(); per = collections.defaultdict(collections.Counter)
+for a, f in pairs:
+    s = gshape(a, f)
+    if s:
+        S[s] += 1; per["_".join(a.split("_")[:1])][s] += 1
+print("generalized shapes", len(S))
+for s, c in S.most_common(12): print(c, s)
+prev = set(int(l.split(",")[0], 16) for l in open("alias_rules_found.txt") if l.strip())
+todo = collections.defaultdict(set)
+for f, al in links.items():
+    if f not in names and f not in prev:
+        for a in al:
+            if a in names: todo[f].add(names[a])
+print("targets left", len(todo))
+top = [s for s, c in S.most_common(4000) if c >= 2]
+found = {}
+for f, als in todo.items():
+    for a in als:
+        toks = a.split("_")
+        cand = [s for s, _ in per[toks[0]].most_common(1500)] + top
+        for g, p, k, t in cand:
+            if k > len(toks) - 1: continue
+            d = render(g, a)
+            if d is None: continue
+            n = (d + B if d else "") + p + "_".join(toks[:len(toks) - k]) + t
+            if fnv63(n) == f: found[f] = n; break
+        if f in found: break
+print("found", len(found))
+open("alias_rules2_found.txt", "w", encoding="utf-8").write("\n".join("%x,%s" % kv for kv in sorted(found.items())) + "\n")
+for n in list(found.values())[::max(1, len(found)//15)][:15]: print("  ", n)
+left = collections.Counter("_".join(sorted(als)[0].split("_")[:2]) for f, als in todo.items() if f not in found)
+print("left by alias prefix", left.most_common(20))

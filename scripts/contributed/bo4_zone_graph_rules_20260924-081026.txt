@@ -1,0 +1,448 @@
+# Name rules along the zone reference graph (xmodel->material, material->image with its semantic suffix, ...), learned on known pairs, plus the by-value scan that finds ids stored as hashes
+#
+# Inputs come from reading every Black Ops 4 zone (the .ff with its .fd patch applied) with the
+# Greyhoundx zone walker (github.com/Kenshin9977/Greyhoundx, `bo4-disk-export --type refs|matimages|strings`):
+# per zone, every asset's position and every pointer between assets, each material's image table with
+# its semantic slot, and the zone's decrypted strings. Names are then derived along those edges from
+# names already known to be real. Every candidate was re-checked at 63 bits before being filed.
+
+
+# ===== graph_rules.py =====
+
+"""Name rules along the reference graph (bo4-disk-export --type refs): for each (owner type, target
+type), on pairs where both names are known, how the target name derives from the owner's
+(target = <pre> + owner stem cut by k tokens + <suf>); the learned shapes then name unnamed targets
+of the tracked pools whose owner is named. Iterated: new names feed the next round."""
+import collections
+import glob
+import mmap
+import os
+import struct
+import subprocess
+import sys
+
+REPO = r"C:\tmp\hash-slinging-slasher"
+M60 = (1 << 60) - 1
+POOL = {"image": 9, "material": 6, "xmodel": 4, "xanim": 3}
+NAME_AT = {"image": 0x20, "xanim": 0x70}          # every other type: the name hash is at +0
+DIRS = ("mc/", "wc/", "splm/", "ei/", "vd/", "clt/", "mcs/", "cltp/", "el/", "vdd/", "mcp/", "ec/")
+
+
+def fnv(s):
+    h = 0xCBF29CE484222325
+    for c in s.encode("utf-8", "surrogateescape"):
+        h = ((h ^ c) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h & M60
+
+
+def show(path):
+    return subprocess.run(["git", "-C", REPO, "show", "origin/main:" + path], capture_output=True).stdout
+
+
+def load_names():
+    names = {}
+    for f in ("image", "material", "xmodel", "xanim", "sound_asset", "sound_alias"):
+        for line in show("all_names/blkops04/%s.txt" % f).decode("utf-8", "replace").splitlines():
+            k, _, v = line.partition(",")
+            try:
+                names[int(k, 16) & M60] = v.strip()
+            except ValueError:
+                pass
+    for f in glob.glob(r"C:\tmp\echo_db\all\*.csv") + glob.glob(r"C:\tmp\echo_db\*.csv"):
+        for line in open(f, encoding="utf-8", errors="replace"):
+            k, _, v = line.partition(",")
+            try:
+                names.setdefault(int(k, 16) & M60, v.strip())
+            except ValueError:
+                pass
+    for f in (r"C:\tmp\zkprobe\chain_images.txt", r"C:\tmp\zkprobe\chain_materials.txt"):
+        if os.path.exists(f):
+            for n in open(f, encoding="utf-8").read().split():
+                names.setdefault(fnv(n), n)
+    return names
+
+
+def unnamed_targets(names):
+    ids = show("snapshots/blkops04.ids")
+    out = collections.defaultdict(set)
+    for off in range(26, len(ids) - 9, 10):
+        i, p = struct.unpack_from("<QH", ids, off)
+        for t, pp in POOL.items():
+            if p == pp and (i & M60) not in names:
+                out[t].add(i & M60)
+    return out
+
+
+def edges():
+    """(owner type, owner hash, target type, target hash) over every zone, deduplicated"""
+    seen = set()
+    for f in glob.glob(r"C:\tmp\bo4refs\*.refs.csv"):
+        z = os.path.basename(f)[:-len(".refs.csv")]
+        with open(r"C:\tmp\bo4\zones_patched\%s.bin" % z, "rb") as fh:
+            buf = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+            for line in open(f):
+                ot, op, tt, tp = line.strip().split(",")
+                if tt not in POOL and ot not in POOL:
+                    continue
+                oh = struct.unpack_from("<Q", buf, int(op, 16) + NAME_AT.get(ot, 0))[0] & M60
+                th = struct.unpack_from("<Q", buf, int(tp, 16) + NAME_AT.get(tt, 0))[0] & M60
+                seen.add((ot, oh, tt, th))
+            buf.close()
+    return seen
+
+
+def cores(name):
+    """the owner's name without its dir prefix, with and without a leading mtl_, cut by 0-4 tokens"""
+    s = name
+    for d in DIRS:
+        if s.startswith(d):
+            s = s[len(d):]
+            break
+    base = [s] + ([s[4:]] if s.startswith("mtl_") else [])
+    out = []
+    for b in base:
+        toks = b.split("_")
+        for k in range(0, min(4, len(toks) - 1) + 1):
+            out.append(("_".join(toks[:len(toks) - k]), b is not s, k))
+    return out
+
+
+def learn(pairs):
+    """shape counts: (pre, strip-mtl, cut k, suf)"""
+    shapes = collections.Counter()
+    for on, tn in pairs:
+        for core, stripped, k in cores(on):
+            i = tn.find(core)
+            if i >= 0 and len(core) >= 4:
+                shapes[(tn[:i], stripped, k, tn[i + len(core):])] += 1
+                break
+    return shapes
+
+
+def main():
+    names = load_names()
+    todo = unnamed_targets(names)
+    print("unnamed:", {t: len(s) for t, s in todo.items()})
+    E = edges()
+    print("distinct typed edges", len(E))
+    by_pair = collections.defaultdict(list)
+    for ot, oh, tt, th in E:
+        by_pair[(ot, tt)].append((oh, th))
+    found = {}
+    for rnd in range(3):
+        grew = 0
+        for (ot, tt), lst in sorted(by_pair.items(), key=lambda kv: -len(kv[1])):
+            if tt not in POOL:
+                continue
+            known = [(names[o], names[t]) for o, t in lst if o in names and t in names]
+            if len(known) < 20:
+                continue
+            shapes = learn(known)
+            top = [s for s, c in shapes.most_common(200) if c >= 3]
+            hits = 0
+            for o, t in lst:
+                if t not in todo[tt] or t in found or o not in names:
+                    continue
+                cs = {c: (st, k) for c, st, k in cores(names[o])}
+                for pre, stripped, k, suf in top:
+                    for core, st, kk in cores(names[o]):
+                        if st == stripped and kk == k:
+                            cand = pre + core + suf
+                            if fnv(cand) == t:
+                                found[t] = (tt, cand)
+                                names[t] = cand
+                                hits += 1
+                            break
+                    if t in found:
+                        break
+            if rnd == 0 or hits:
+                print("round %d %-18s -> %-9s edges %8d known %8d shapes %4d  new %d"
+                      % (rnd, ot, tt, len(lst), len(known), len(top), hits))
+            grew += hits
+        if not grew:
+            break
+    per = collections.Counter(tt for tt, _ in found.values())
+    print("new names per pool:", dict(per))
+    with open(r"C:\tmp\zkprobe\graph_found.txt", "w", encoding="utf-8") as fh:
+        for t, (tt, n) in sorted(found.items(), key=lambda kv: kv[1]):
+            fh.write("%s\t%s\n" % (tt, n))
+
+
+main()
+
+# ===== matimg_rule.py =====
+
+"""Material -> image naming: on (material, semantic, image) triples where both names are known,
+how the image name derives from the material name; then how many unnamed images that rule reaches."""
+import collections
+import glob
+import struct
+import subprocess
+
+REPO = r"C:\tmp\hash-slinging-slasher"
+M60 = (1 << 60) - 1
+
+
+def fnv(s):
+    h = 0xCBF29CE484222325
+    for c in s.encode():
+        h = ((h ^ c) * 0x100000001B3) & 0xFFFFFFFFFFFFFFFF
+    return h & M60
+
+
+def show(path):
+    return subprocess.run(["git", "-C", REPO, "show", "origin/main:" + path], capture_output=True).stdout
+
+
+names = {}
+for f in ("image", "material"):
+    for line in show("all_names/blkops04/%s.txt" % f).decode("utf-8", "replace").splitlines():
+        k, _, v = line.partition(",")
+        try:
+            names[int(k, 16) & M60] = v.strip()
+        except ValueError:
+            pass
+for f in glob.glob(r"C:\tmp\echo_db\all\fnv1a_x*.csv"):
+    for line in open(f, encoding="utf-8", errors="replace"):
+        k, _, v = line.partition(",")
+        try:
+            names.setdefault(int(k, 16) & M60, v.strip())
+        except ValueError:
+            pass
+
+ids = show("snapshots/blkops04.ids")
+image_ids = set()
+for off in range(26, len(ids) - 9, 10):
+    i, p = struct.unpack_from("<QH", ids, off)
+    if p == 9:
+        image_ids.add(i & M60)
+unnamed_images = {i for i in image_ids if i not in names}
+print("images in snapshot", len(image_ids), "unnamed", len(unnamed_images))
+
+triples = set()
+for f in glob.glob(r"C:\tmp\bo4mat\*.matimages.csv"):
+    for line in open(f):
+        m, slot, sem, img = line.strip().split(",")
+        if img != "0":
+            triples.add((int(m, 16), int(sem, 16), int(img, 16)))
+print("distinct (material, semantic, image) triples", len(triples))
+
+# how the image name relates to the material name, per semantic
+shape = collections.defaultdict(collections.Counter)
+both = 0
+for m, sem, img in triples:
+    mn, im = names.get(m), names.get(img)
+    if not mn or not im:
+        continue
+    both += 1
+    base = mn[4:] if mn.startswith("mtl_") else mn
+    if im.startswith("i_" + mn):
+        shape[sem]["i_<material>" + im[2 + len(mn):]] += 1
+    elif im.startswith("i_" + base):
+        shape[sem]["i_<material minus mtl_>" + im[2 + len(base):]] += 1
+    else:
+        shape[sem]["other"] += 1
+print("triples with both names", both)
+for sem, c in sorted(shape.items(), key=lambda kv: -sum(kv[1].values()))[:10]:
+    tot = sum(c.values())
+    print("semantic %08x  %6d pairs:" % (sem, tot), [(k, round(100.0 * v / tot, 1)) for k, v in c.most_common(4)])
+
+# the rule applied: unnamed images referenced by a named material, candidates from the observed suffixes
+suffixes = collections.defaultdict(collections.Counter)
+for sem, c in shape.items():
+    for k, v in c.items():
+        if k.startswith("i_<material>"):
+            suffixes[sem][("m", k[len("i_<material>"):])] += v
+        elif k.startswith("i_<material minus mtl_>"):
+            suffixes[sem][("b", k[len("i_<material minus mtl_>"):])] += v
+reachable = set()
+found = {}
+for m, sem, img in triples:
+    if img not in unnamed_images or m not in names:
+        continue
+    reachable.add(img)
+    mn = names[m]
+    base = mn[4:] if mn.startswith("mtl_") else mn
+    for (kind, suf), _ in suffixes[sem].most_common(40):
+        cand = "i_" + (mn if kind == "m" else base) + suf
+        if fnv(cand) == img:
+            found[img] = cand
+            break
+print("unnamed images referenced by a named material:", len(reachable), "; named by the rule:", len(found))
+print(list(found.values())[:10])
+open(r"C:\tmp\zkprobe\matimg_found.txt", "w").write("\n".join(sorted(set(found.values()))) + "\n")
+
+# ===== matimg_rule2.py =====
+
+"""Material -> image, properly: material names carry a dir prefix (mc/ wc/ vd/ ...) and often mtl_;
+an image the material owns is i_<stem>[_<suffix per semantic>], the stem possibly cut short by a
+few trailing tokens (variants share textures). Learned on known pairs, applied to unnamed images."""
+import collections
+import sys
+
+sys.argv = ["x"]
+src = open(r"C:\tmp\zkprobe\matimg_rule.py", encoding="utf-8").read()
+exec(src[:src.index("# how the image name relates")])
+
+
+def stems(mn):
+    s = mn.split("/", 1)[1] if "/" in mn else mn
+    out = [s]
+    if s.startswith("mtl_"):
+        out.append(s[4:])
+    return out
+
+
+def cuts(stem, maxcut=3):
+    toks = stem.split("_")
+    return ["_".join(toks[:len(toks) - k]) for k in range(0, min(maxcut, len(toks) - 1) + 1)]
+
+
+# learn: per semantic, the suffixes seen after i_<stem or a cut of it>
+suf = collections.defaultdict(collections.Counter)
+owned = total = 0
+for m, sem, img in triples:
+    mn, im = names.get(m), names.get(img)
+    if not mn or not im or not im.startswith("i_"):
+        continue
+    total += 1
+    body = im[2:]
+    hit = None
+    for st in stems(mn):
+        for c in cuts(st):
+            if body == c or body.startswith(c + "_"):
+                hit = body[len(c):]
+                break
+        if hit is not None:
+            break
+    if hit is not None:
+        owned += 1
+        suf[sem][hit] += 1
+print("known pairs with an i_ image:", total, " derived from the material name:", owned)
+for sem, c in sorted(suf.items(), key=lambda kv: -sum(kv[1].values()))[:8]:
+    print("  %08x" % sem, c.most_common(6))
+
+# apply to unnamed images referenced by a named material
+ALL = [x for x, _ in sum(suf.values(), collections.Counter()).most_common(80)]
+PER = {sem: [x for x, _ in c.most_common(60)] for sem, c in suf.items()}
+found = {}
+tried = set()
+for m, sem, img in triples:
+    if img not in unnamed_images or m not in names or img in found:
+        continue
+    tried.add(img)
+    cands = PER.get(sem, []) + ALL
+    for st in stems(names[m]):
+        for c in cuts(st, 4):
+            for s in cands:
+                name = "i_" + c + s
+                if fnv(name) == img:
+                    found[img] = name
+                    break
+            if img in found:
+                break
+        if img in found:
+            break
+print("unnamed images referenced by a named material:", len(tried), " named:", len(found))
+print(sorted(found.values())[:15])
+open(r"C:\tmp\zkprobe\matimg_found.txt", "w").write("\n".join(sorted(found.values())) + "\n")
+
+# ===== byvalue_scan.py =====
+
+"""Every place an unnamed id of the tracked pools is stored BY VALUE (a hash in a field, not a
+pointer), attributed to the zone-level asset that holds it. Out: C:\\tmp\\zkprobe\\byvalue.tsv
+  target_pool  target_id  owner_type  owner_name_hash  offset_in_owner  zone"""
+import bisect
+import collections
+import glob
+import mmap
+import multiprocessing
+import os
+import sys
+
+import numpy as np
+
+sys.argv = ["x"]
+src = open(r"C:\tmp\zkprobe\graph_rules.py", encoding="utf-8").read()
+exec(src[:src.index("def main():")])
+
+
+def targets():
+    names = load_names()
+    todo = unnamed_targets(names)
+    out = {}
+    for t, s in todo.items():
+        for i in s:
+            out[i] = t
+    return out
+
+
+def scan(args):
+    paths, tmap = args
+    tarr = np.array(sorted(tmap), dtype=np.uint64)
+    low = np.zeros(1 << 16, dtype=bool)
+    low[(tarr & np.uint64(0xFFFF)).astype(np.int64)] = True
+    rows = []
+    m60 = np.uint64(M60)
+    for p in paths:
+        z = os.path.basename(p)[:-4]
+        rp = r"C:\tmp\bo4refs\%s.roots.csv" % z
+        if not os.path.exists(rp):
+            continue
+        roots = []
+        for line in open(rp):
+            t, pos = line.strip().split(",")
+            roots.append((int(pos, 16), t))
+        roots.sort()
+        rpos = [r[0] for r in roots]
+        with open(p, "rb") as fh:
+            buf = mmap.mmap(fh.fileno(), 0, access=mmap.ACCESS_READ)
+            data = np.frombuffer(buf, dtype=np.uint8)
+            n = len(data)
+            for a in range(8):
+                cnt = (n - a) // 8
+                if cnt <= 0:
+                    continue
+                v = np.frombuffer(buf, dtype="<u8", count=cnt, offset=a) & m60
+                cand = np.nonzero(low[(v & np.uint64(0xFFFF)).astype(np.int64)])[0]
+                if len(cand) == 0:
+                    continue
+                hit = cand[np.isin(v[cand], tarr)]
+                for k in hit.tolist():
+                    at = a + 8 * k
+                    tid = int(v[k])
+                    i = bisect.bisect_right(rpos, at) - 1
+                    if i < 0:
+                        continue
+                    opos, otype = roots[i]
+                    if at - opos == NAME_AT.get(otype, 0):
+                        continue            # an asset's own name
+                    oh = int(np.frombuffer(buf, dtype="<u8", count=1, offset=opos + NAME_AT.get(otype, 0))[0]) & M60
+                    rows.append((tmap[tid], tid, otype, oh, at - opos, z))
+            del data
+            buf.close()
+    return rows
+
+
+def main():
+    tmap = targets()
+    print("unnamed ids searched", len(tmap), collections.Counter(tmap.values()))
+    zs = sorted(glob.glob(r"C:\tmp\bo4\zones_patched\*.bin"), key=os.path.getsize)
+    jobs = 4
+    with multiprocessing.Pool(jobs) as pool:
+        parts = pool.map(scan, [(zs[i::jobs], tmap) for i in range(jobs)])
+    rows = [r for p in parts for r in p]
+    with open(r"C:\tmp\zkprobe\byvalue.tsv", "w") as fh:
+        for r in rows:
+            fh.write("%s\t%x\t%s\t%x\t%x\t%s\n" % r)
+    per = collections.Counter((r[0], r[2]) for r in rows)
+    ids_hit = collections.Counter()
+    for pool_ in ("image", "material", "xmodel", "xanim"):
+        ids_hit[pool_] = len({r[1] for r in rows if r[0] == pool_})
+    print("occurrences", len(rows), "distinct ids found by value:", dict(ids_hit))
+    for (t, o), c in per.most_common(25):
+        print("  %-9s held by %-28s %8d" % (t, o, c))
+
+
+if __name__ == "__main__":
+    main()
