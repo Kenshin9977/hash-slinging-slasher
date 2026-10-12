@@ -9,7 +9,12 @@ commonest. This is the template-with-slot-categories idea of the BO4 rounds (MET
 import collections
 import re
 
-from core import config, engines, games, names
+# Reference algorithm: its external core/ engine is not shipped by this repository.
+# Use confirm_list or confirm_plan for normal portable confirmation.
+try:
+    from core import config, engines, games, names
+except ImportError as error:
+    raise ImportError('This reference helper requires the contributor external core/ engine') from error
 
 TOKEN = re.compile('[^_/.]+')
 
@@ -18,7 +23,7 @@ def shape(t):
     return re.sub(r'\d+', '#', t)
 
 
-def run(tags, kind, cap=60, min_count=2, count_only=False, log=print, only=None, gpu=False):
+def run(tags, kind, cap=60, min_count=2, count_only=False, log=print, only=None):
     """only: a set of names; when given, just these known names are skeletons (a family worth a wider
     cap), the alphabets still come from every known name."""
     assert games.same_family(tags, kind), 'these games do not hash this kind alike: run them apart'
@@ -61,9 +66,5 @@ def run(tags, kind, cap=60, min_count=2, count_only=False, log=print, only=None,
     engines.write(f[1], list(words))
     engines.write(f[2], (' '.join(map(str, a[1])) for a in sorted(alphabets.values())))
     engines.write(f[3], rows)
-    if gpu:            # same candidates on the GPU box (tools/gpu/pair_gpu.cu); affords a much wider cap
-        from core import box
-        hits = box.gpu_engine('pair_gpu', tags[0], kind, f)
-    else:
-        hits = engines.run('pair_slots', tags[0], kind, f)
+    hits = engines.run('pair_slots', tags[0], kind, f)
     return {name: i for i, name in hits if name not in skeletons}

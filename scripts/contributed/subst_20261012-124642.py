@@ -10,7 +10,12 @@ with 50k words and insertion; the Call of Duty wiki's page titles as the word fi
 import collections
 import re
 
-from core import config, engines, games, names
+# Reference algorithm: its external core/ engine is not shipped by this repository.
+# Use confirm_list or confirm_plan for normal portable confirmation.
+try:
+    from core import config, engines, games, names
+except ImportError as error:
+    raise ImportError('This reference helper requires the contributor external core/ engine') from error
 
 CUT = re.compile('[_/.]')
 
@@ -29,7 +34,7 @@ def vocabulary(known_by_game, kind, min_count, other_min, max_words):
 
 
 def run(tags, kind, words_file=None, insert=False, max_words=20000, min_count=2, other_min=5, rounds=6, log=print,
-        skeletons_file=None, gpu=False):
+        skeletons_file=None):
     assert games.same_family(tags, kind), 'these games do not hash this kind alike: run them apart'
     known_by_game = [names.known(t) for t in tags]
     skeletons = {n for k in known_by_game for n in k[kind].values() if names.usable(n)}
@@ -50,11 +55,7 @@ def run(tags, kind, words_file=None, insert=False, max_words=20000, min_count=2,
         engines.write(f[2], words)
         log('subst %s round %d: %d targets, %d skeletons, %d words' % (kind, r + 1, len(targets), len(new), len(words)))
         ops = 'both' if insert else 'replace'
-        if gpu:        # same candidates on the GPU box (tools/gpu/subst_gpu.cu)
-            from core import box
-            hits = box.gpu_engine('subst_gpu', tags[0], kind, f, SUBST_OPS=ops)
-        else:
-            hits = engines.run('subst', tags[0], kind, f, SUBST_OPS=ops)
+        hits = engines.run('subst', tags[0], kind, f, SUBST_OPS=ops)
         new = []
         for i, name in hits:
             if name not in seen:
