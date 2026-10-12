@@ -17,7 +17,12 @@ import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.path.dirname(os.path.abspath(__file__))
+while not os.path.isfile(os.path.join(ROOT, "scripts", "snapshot.py")):
+    parent = os.path.dirname(ROOT)
+    if parent == ROOT:
+        raise SystemExit("Could not locate the repository root")
+    ROOT = parent
 OK = re.compile(r'^[a-z0-9_]{4,90}$')
 
 

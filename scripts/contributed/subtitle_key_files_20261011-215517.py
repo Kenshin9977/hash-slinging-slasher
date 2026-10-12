@@ -14,7 +14,12 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from dialogue_lines import squeeze  # noqa: E402
+import importlib.util
+from pathlib import Path
+_spec = importlib.util.spec_from_file_location("dialogue_lines", Path(__file__).with_name("dialogue_lines_20261011-215517.py"))
+_dialogue = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_dialogue)
+squeeze = _dialogue.squeeze
 
 BS = chr(92)
 

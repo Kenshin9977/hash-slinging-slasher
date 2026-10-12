@@ -9,7 +9,12 @@ commonest. This is the template-with-slot-categories idea of the BO4 rounds (MET
 import collections
 import re
 
-from core import config, engines, games, names
+# Reference algorithm from the contributor's separate core/ engine.
+# This repository does not ship that engine; this helper is not a standalone CLI.
+try:
+    from core import config, engines, games, names
+except ImportError as error:
+    raise ImportError("This reference helper requires the contributor's external core/ engine; use the repository's confirm_list or confirm_plan for confirmation.") from error
 
 TOKEN = re.compile('[^_/.]+')
 
